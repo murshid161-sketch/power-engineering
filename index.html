@@ -11,7 +11,7 @@
        BUILD must equal the "v" value in version.json. Bump BOTH on every deploy. -->
   <script>
   (function(){
-    var BUILD="2026-06-13.14";
+    var BUILD="2026-06-13.15";
     try{
       fetch("version.json?ts="+Date.now(),{cache:"no-store"})
         .then(function(r){return r.ok?r.json():null;})
@@ -3673,6 +3673,50 @@ function DPRScreen({project,mainActivity,onBack,fbStatus,setFbStatus}) {
     persist({...daily,[sid]:{...daily[sid],[sak]:{...d,done:d.done.filter(x=>x!==loc),ip:d.ip.filter(x=>x!==loc)}}});
   }
 
+  // ── Range chips: group consecutive towers (same status) into one chip ───────
+  function groupLocRanges(sid, locs, statusOf){
+    const units=getUnits(sid);
+    const idx=new Map(units.map((l,i)=>[l,i]));
+    const sorted=[...locs].sort((a,b)=>(idx.get(a)??1e9)-(idx.get(b)??1e9));
+    const out=[]; let run=null;
+    sorted.forEach(loc=>{
+      const i=idx.get(loc)??-1;
+      const k=statusOf?statusOf(loc):"";
+      if(run && run.k===k && i===run.lastIdx+1){ run.to=loc; run.lastIdx=i; run.locs.push(loc); }
+      else { run={from:loc,to:loc,lastIdx:i,k,locs:[loc]}; out.push(run); }
+    });
+    return out;
+  }
+  // Secondary text for a range chip: latest planned date (plandate mode) or shared type.
+  function rangeSub(locs, saKey){
+    if(chipMode==="plandate"){
+      const dates=locs.map(l=>schedPlan[seg]?.[saKey]?.[l]).filter(Boolean);
+      if(!dates.length) return "";
+      return fmtChip(dates.reduce((a,b)=>a>b?a:b));
+    }
+    const types=new Set(locs.map(l=>config.segments.find(s=>s.id===seg)?.units.find(u=>u.loc===l)?.type).filter(t=>t&&t!=="–"));
+    return types.size===1?[...types][0]:"";
+  }
+  const rangeOverdue=(locs,saKey)=>locs.some(l=>chipOverdue(l,saKey));
+  const rangeLabel=g=>g.from===g.to?g.from:`${g.from}-${g.to}`;
+
+  function toggleRange(sid,sak,locs){
+    const d=daily[sid]?.[sak]; if(!d) return;
+    let nd=[...d.done], ni=[...d.ip];
+    locs.forEach(loc=>{
+      if(d.done.includes(loc)){ nd=nd.filter(x=>x!==loc); if(!ni.includes(loc))ni.push(loc); }
+      else if(d.ip.includes(loc)){ ni=ni.filter(x=>x!==loc); if(!nd.includes(loc))nd.push(loc); }
+      else { if(!nd.includes(loc))nd.push(loc); }
+    });
+    persist({...daily,[sid]:{...daily[sid],[sak]:{...d,done:nd,ip:ni}}});
+  }
+  function removeRange(sid,sak,locs,mode="dpr"){
+    const d=daily[sid]?.[sak]; if(!d) return;
+    const set=new Set(locs);
+    if(mode==="plan"){ persist({...daily,[sid]:{...daily[sid],[sak]:{...d,plan:d.plan.filter(x=>!set.has(x))}}}); return; }
+    persist({...daily,[sid]:{...daily[sid],[sak]:{...d,done:d.done.filter(x=>!set.has(x)),ip:d.ip.filter(x=>!set.has(x))}}});
+  }
+
   function addChips(sid,sak,startAs,mode="dpr",directLoc=null) {
     const raw=directLoc||(inputs[`${sid}_${sak}`]||"").trim();
     if (!raw) return;
@@ -3759,16 +3803,22 @@ function DPRScreen({project,mainActivity,onBack,fbStatus,setFbStatus}) {
   function buildDprText() {
     const MON=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
     const fmtDate=ds=>{const[y,m,d]=ds.split("-").map(Number);return `${String(d).padStart(2,"0")}-${MON[m-1]}-${y}`;};
-    const subFor=(loc,seg2,saKey)=>{
+    const rangeSubText=(g,seg2,saKey)=>{
       if(chipMode==="plandate"){
-        const end=schedPlan[seg2.id]?.[saKey]?.[loc];
-        if(!end) return "";
-        const overdue=end<todayStr()&&!((cum?.[seg2.id]?.[saKey]?.done||[]).includes(loc)||(daily?.[seg2.id]?.[saKey]?.done||[]).includes(loc));
-        return fmtChip(end)+(overdue?" ⚠":"");
+        const dates=g.locs.map(l=>schedPlan[seg2.id]?.[saKey]?.[l]).filter(Boolean);
+        if(!dates.length) return "";
+        const mx=dates.reduce((a,b)=>a>b?a:b);
+        const overdue=mx<todayStr()&&!g.locs.every(l=>(cum?.[seg2.id]?.[saKey]?.done||[]).includes(l)||(daily?.[seg2.id]?.[saKey]?.done||[]).includes(l));
+        return fmtChip(mx)+(overdue?" ⚠":"");
       }
-      const tt=seg2.units.find(u=>u.loc===loc)?.type; return (tt&&tt!=="–")?tt:"";
+      const t=new Set(g.locs.map(l=>seg2.units.find(u=>u.loc===l)?.type).filter(x=>x&&x!=="–"));
+      return t.size===1?[...t][0]:"";
     };
-    const fmtLocs=(locs,seg2,saKey)=>locs.map(loc=>{const s=subFor(loc,seg2,saKey);return s?`${loc} (${s})`:loc;}).join(", ");
+    const fmtLocs=(locs,seg2,saKey)=>groupLocRanges(seg2.id,locs).map(g=>{
+      const label=g.from===g.to?g.from:`${g.from}-${g.to}`;
+      const s=rangeSubText(g,seg2,saKey);
+      return s?`${label} (${s})`:label;
+    }).join(", ");
     const collect=key=>config.segments.flatMap(seg2=>config.subActivities.map(sa=>{const locs=(daily[seg2.id]?.[sa.key]||{})[key]||[];return locs.length?{seg2,sa,locs}:null;}).filter(Boolean));
     const lines=[];
     lines.push(`*DPR - ${project.name}*`);
@@ -3864,19 +3914,25 @@ function DPRScreen({project,mainActivity,onBack,fbStatus,setFbStatus}) {
     // Format towers with a per-tower sub-label underneath — type OR planned date per toggle
     const fmtTowers = (arr, color, icon, segId, saKey) => {
       if (!arr.length) return "";
-      const chips = arr.map(loc => {
-        const end = schedPlan[segId]?.[saKey]?.[loc];
-        const overdue = chipMode==="plandate" && end && end<todayStr()
-          && !((cum?.[segId]?.[saKey]?.done||[]).includes(loc)||(daily?.[segId]?.[saKey]?.done||[]).includes(loc));
-        const sub = chipMode==="plandate"
-          ? fmtChip(end)
-          : (typeMap[segId]?.[loc] || "");
+      const chips = groupLocRanges(segId, arr).map(g => {
+        const label=g.from===g.to?g.from:`${g.from}-${g.to}`;
+        let sub="", overdue=false;
+        if (chipMode==="plandate") {
+          const dates=g.locs.map(l=>schedPlan[segId]?.[saKey]?.[l]).filter(Boolean);
+          if (dates.length) {
+            const mx=dates.reduce((a,b)=>a>b?a:b); sub=fmtChip(mx);
+            overdue=mx<todayStr() && !g.locs.every(l=>(cum?.[segId]?.[saKey]?.done||[]).includes(l)||(daily?.[segId]?.[saKey]?.done||[]).includes(l));
+          }
+        } else {
+          const t=new Set(g.locs.map(l=>typeMap[segId]?.[l]).filter(Boolean));
+          sub=t.size===1?[...t][0]:"";
+        }
         const subClr = overdue ? "#cc2222" : color;
         const subTag = sub
           ? `<div style="font-size:9px;font-weight:${overdue?800:600};color:${subClr};opacity:${overdue?1:0.7};margin-top:1px;letter-spacing:0.3px;">${sub}</div>`
           : "";
         return `<span style="display:inline-flex;flex-direction:column;align-items:center;margin:2px 4px;">
-          <span style="color:${color};font-weight:700;font-family:'Courier New',monospace;font-size:12px;">${icon} ${loc}</span>
+          <span style="color:${color};font-weight:700;font-family:'Courier New',monospace;font-size:12px;">${icon} ${label}</span>
           ${subTag}
         </span>`;
       }).join("");
@@ -4265,12 +4321,12 @@ function DPRScreen({project,mainActivity,onBack,fbStatus,setFbStatus}) {
 
               {chips.length>0&&(
                 <div style={{display:"flex",flexWrap:"wrap",marginTop:2}}>
-                  {chips.map(loc=>(
-                    <Chip key={loc} loc={loc} status={chipStatus(seg,sa.key,loc)}
-                      onToggle={()=>toggle(seg,sa.key,loc)}
-                      onRemove={()=>remove(seg,sa.key,loc)}
-                      towerType={chipSub(loc,sa.key)}
-                      subColor={chipOverdue(loc,sa.key)?"#cc2222":undefined}/>
+                  {groupLocRanges(seg,chips,loc=>chipStatus(seg,sa.key,loc)).map(g=>(
+                    <Chip key={rangeLabel(g)} loc={rangeLabel(g)} status={g.k}
+                      onToggle={()=>toggleRange(seg,sa.key,g.locs)}
+                      onRemove={()=>removeRange(seg,sa.key,g.locs)}
+                      towerType={rangeSub(g.locs,sa.key)}
+                      subColor={rangeOverdue(g.locs,sa.key)?"#cc2222":undefined}/>
                   ))}
                 </div>
               )}
@@ -4324,15 +4380,16 @@ function DPRScreen({project,mainActivity,onBack,fbStatus,setFbStatus}) {
               </div>
               {pc.length>0&&(
                 <div style={{display:"flex",flexWrap:"wrap",marginTop:2}}>
-                  {pc.map(loc=>{
-                    const ttype=chipSub(loc,sa.key);
+                  {groupLocRanges(seg,pc).map(g=>{
+                    const ttype=rangeSub(g.locs,sa.key);
+                    const od=rangeOverdue(g.locs,sa.key);
                     return (
-                      <div key={loc} style={{position:"relative",display:"inline-flex",margin:"3px"}}>
+                      <div key={rangeLabel(g)} style={{position:"relative",display:"inline-flex",margin:"3px"}}>
                         <span style={{background:"#eaf2ff",color:"#1a5ab0",border:"1.5px solid #6090d0",borderRadius:7,padding:"5px 10px",fontFamily:MONO,fontSize:12,fontWeight:700,display:"flex",flexDirection:"column",alignItems:"center",gap:1}}>
-                          <span>📅 {loc}</span>
-                          {ttype&&ttype!=="–"&&<span style={{fontSize:9,fontWeight:chipOverdue(loc,sa.key)?800:600,opacity:chipOverdue(loc,sa.key)?1:0.65,letterSpacing:0.3,color:chipOverdue(loc,sa.key)?"#cc2222":undefined}}>{ttype}</span>}
+                          <span>📅 {rangeLabel(g)}</span>
+                          {ttype&&ttype!=="–"&&<span style={{fontSize:9,fontWeight:od?800:600,opacity:od?1:0.65,letterSpacing:0.3,color:od?"#cc2222":undefined}}>{ttype}</span>}
                         </span>
-                        <button onClick={()=>remove(seg,sa.key,loc,"plan")} style={{position:"absolute",top:-6,right:-6,width:16,height:16,borderRadius:"50%",background:"#e8eaf0",border:"1px solid #c0c8d8",color:"#777",fontSize:9,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",padding:0,lineHeight:1}}>✕</button>
+                        <button onClick={()=>removeRange(seg,sa.key,g.locs,"plan")} style={{position:"absolute",top:-6,right:-6,width:16,height:16,borderRadius:"50%",background:"#e8eaf0",border:"1px solid #c0c8d8",color:"#777",fontSize:9,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",padding:0,lineHeight:1}}>✕</button>
                       </div>
                     );
                   })}
