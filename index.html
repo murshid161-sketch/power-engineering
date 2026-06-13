@@ -1041,17 +1041,37 @@ function GridTab({config, cum, daily, cfgKey, onConfigUpdate, flash}) {
   );
 }
 
+// ── SCHEDULE helpers ──────────────────────────────────────────────────────────
+// Inclusive list of YYYY-MM-DD strings between start and end (capped for safety).
+function schedDateRange(start, end, cap=180) {
+  const out=[];
+  if (!start||!end) return out;
+  const d=new Date(start+"T00:00:00"), e=new Date(end+"T00:00:00");
+  if (isNaN(d.getTime())||isNaN(e.getTime())||d>e) return out;
+  let g=0;
+  while (d<=e && g<cap) { out.push(d.toISOString().split("T")[0]); d.setDate(d.getDate()+1); g++; }
+  return out;
+}
+function schedColLabel(dt) {
+  const d=new Date(dt+"T00:00:00");
+  return { day:d.getDate(),
+           mon:d.toLocaleString("en-US",{month:"short"}),
+           wd:d.toLocaleString("en-US",{weekday:"short"}) };
+}
+
 // ── SCHEDULE TAB ──────────────────────────────────────────────────────────────
 function ScheduleTab({config, cum, daily, cfgKey, project, mainActivity, date, weather, temp}) {
   const [schedules, setSchedules] = useState(null);
   const [seg, setSeg]             = useState(null);
   const [activeSch, setActiveSch] = useState(null);
   const [showNew, setShowNew]     = useState(false);
-  const [form, setForm]           = useState({label:"",from:"",to:"",targetDate:""});
+  const [form, setForm]           = useState({label:"",from:"",to:"",start:todayStr(),targetDate:""});
   const [editId, setEditId]       = useState(null);
   const [editForm, setEditForm]   = useState({});
   const [saving, setSaving]       = useState(false);
   const [msg, setMsg]             = useState("");
+  // histDone[segId][saKey][loc] = earliest date that activity was completed (from DPR history)
+  const [histDone, setHistDone]   = useState({});
 
   const schedKey = "schedule_" + cfgKey;
 
@@ -1067,6 +1087,53 @@ function ScheduleTab({config, cum, daily, cfgKey, project, mainActivity, date, w
     }
     load();
   },[cfgKey, config]);
+
+  // Scan all DPR daily docs for this activity → map each completion to the date it happened.
+  useEffect(()=>{
+    if (!config||!cfgKey) return;
+    let cancelled=false;
+    (async()=>{
+      const map={};
+      if (await waitFb() && window._fbReady) {
+        try {
+          const snap=await window._fbGetDocs(window._fbCollection(window._fbDb, ns("dpr_daily")));
+          snap.forEach(docu=>{
+            const id=docu.id;
+            if (!id.startsWith(cfgKey+"_")) return;
+            const m=id.match(/_(\d{4}-\d{2}-\d{2})$/);
+            if (!m) return;
+            const dt=m[1];
+            let data; try { data=JSON.parse(docu.data().data); } catch(e){ return; }
+            Object.keys(data||{}).forEach(segId=>{
+              Object.keys(data[segId]||{}).forEach(saKey=>{
+                const done=data[segId][saKey]?.done||[];
+                if (!done.length) return;
+                map[segId]=map[segId]||{};
+                map[segId][saKey]=map[segId][saKey]||{};
+                done.forEach(loc=>{
+                  if (!map[segId][saKey][loc] || dt<map[segId][saKey][loc]) map[segId][saKey][loc]=dt;
+                });
+              });
+            });
+          });
+        } catch(e){ console.warn("hist load",e); }
+      }
+      if (!cancelled) setHistDone(map);
+    })();
+    return ()=>{ cancelled=true; };
+  },[cfgKey, config]);
+
+  // Toggle a planned date for (location, activity) on the active schedule.
+  async function togglePlan(loc, saKey, dt) {
+    if (!active) return;
+    const cur=active.plan?.[loc]?.[saKey];
+    const newPlan=JSON.parse(JSON.stringify(active.plan||{}));
+    newPlan[loc]=newPlan[loc]||{};
+    if (cur===dt) delete newPlan[loc][saKey];
+    else newPlan[loc][saKey]=dt;
+    const next={...schedules,[seg]:schedules[seg].map(s=>s.id===active.id?{...s,plan:newPlan}:s)};
+    await saveAll(next);
+  }
 
   async function saveAll(next) {
     setSchedules(next);
@@ -1104,10 +1171,10 @@ function ScheduleTab({config, cum, daily, cfgKey, project, mainActivity, date, w
     if (!form.label.trim()||!form.from||!form.to){flash("❌ Fill label, from and to tower");return;}
     setSaving(true);
     const id="sch_"+Date.now();
-    const entry={id,label:form.label.trim(),from:form.from,to:form.to,targetDate:form.targetDate,createdAt:todayStr()};
+    const entry={id,label:form.label.trim(),from:form.from,to:form.to,start:form.start||todayStr(),targetDate:form.targetDate,plan:{},createdAt:todayStr()};
     const next={...schedules,[seg]:[entry,...(schedules[seg]||[])]};
     await saveAll(next);
-    setActiveSch(id); setShowNew(false); setForm({label:"",from:"",to:"",targetDate:""});
+    setActiveSch(id); setShowNew(false); setForm({label:"",from:"",to:"",start:todayStr(),targetDate:""});
     setSaving(false); flash("✅ Schedule created");
   }
 
@@ -1218,7 +1285,9 @@ th{padding:10px 12px;color:#fff;font-size:11px;font-weight:700;text-align:left;w
   const units   = currSeg?.units||[];
   const towers  = active?towersBetween(seg,active.from,active.to):[];
   const pct     = active?overallPct(seg,towers):0;
-  const sStyle  = st=>({done:{bg:"#eafaf0",fg:"#1a7a35",bdr:"#3fb950",icon:"✓"},ip:{bg:"#fff8ec",fg:"#b06000",bdr:"#e09030",icon:"▶"},pending:{bg:"#f0f2f8",fg:"#c0c8d8",bdr:"#d8dce8",icon:"○"}}[st]||{bg:"#f0f2f8",fg:"#c0c8d8",bdr:"#d8dce8",icon:"○"});
+  const schedStart = active?(active.start||active.createdAt||todayStr()):null;
+  const schedEnd   = active?(active.targetDate||""):null;
+  const dateCols   = active?schedDateRange(schedStart, schedEnd):[];
 
   return (
     <div style={{fontFamily:"'Segoe UI',system-ui,sans-serif"}}>
@@ -1289,11 +1358,19 @@ th{padding:10px 12px;color:#fff;font-size:11px;font-weight:700;text-align:left;w
                   </select>
                 </div>
               </div>
-              <div>
-                <div style={{fontSize:11,color:C.muted,fontWeight:600,marginBottom:4}}>TARGET DATE</div>
-                <input type="date" value={form.targetDate} onChange={e=>setForm(f=>({...f,targetDate:e.target.value}))}
-                  style={{width:"100%",padding:"9px 12px",borderRadius:7,border:`1px solid ${C.border}`,
-                    fontSize:13,color:C.text,outline:"none",boxSizing:"border-box"}}/>
+              <div style={{display:"flex",gap:10}}>
+                <div style={{flex:1}}>
+                  <div style={{fontSize:11,color:C.muted,fontWeight:600,marginBottom:4}}>START DATE</div>
+                  <input type="date" value={form.start} onChange={e=>setForm(f=>({...f,start:e.target.value}))}
+                    style={{width:"100%",padding:"9px 12px",borderRadius:7,border:`1px solid ${C.border}`,
+                      fontSize:13,color:C.text,outline:"none",boxSizing:"border-box"}}/>
+                </div>
+                <div style={{flex:1}}>
+                  <div style={{fontSize:11,color:C.muted,fontWeight:600,marginBottom:4}}>TARGET DATE</div>
+                  <input type="date" value={form.targetDate} onChange={e=>setForm(f=>({...f,targetDate:e.target.value}))}
+                    style={{width:"100%",padding:"9px 12px",borderRadius:7,border:`1px solid ${C.border}`,
+                      fontSize:13,color:C.text,outline:"none",boxSizing:"border-box"}}/>
+                </div>
               </div>
             </div>
             <div style={{display:"flex",gap:8}}>
@@ -1302,7 +1379,7 @@ th{padding:10px 12px;color:#fff;font-size:11px;font-weight:700;text-align:left;w
                   padding:"10px",cursor:"pointer",fontWeight:700,fontSize:13}}>
                 {saving?"Saving…":"Create"}
               </button>
-              <button onClick={()=>{setShowNew(false);setForm({label:"",from:"",to:"",targetDate:""}); }}
+              <button onClick={()=>{setShowNew(false);setForm({label:"",from:"",to:"",start:todayStr(),targetDate:""}); }}
                 style={{background:C.card,color:C.muted,border:`1px solid ${C.border}`,
                   borderRadius:8,padding:"10px 16px",cursor:"pointer",fontSize:13}}>
                 Cancel
@@ -1353,11 +1430,19 @@ th{padding:10px 12px;color:#fff;font-size:11px;font-weight:700;text-align:left;w
                       </select>
                     </div>
                   </div>
-                  <div>
-                    <div style={{fontSize:11,color:C.muted,fontWeight:600,marginBottom:4}}>TARGET DATE</div>
-                    <input type="date" value={editForm.targetDate||""} onChange={e=>setEditForm(f=>({...f,targetDate:e.target.value}))}
-                      style={{width:"100%",padding:"9px 12px",borderRadius:7,border:`1px solid ${C.border}`,
-                        fontSize:13,color:C.text,outline:"none",boxSizing:"border-box"}}/>
+                  <div style={{display:"flex",gap:10}}>
+                    <div style={{flex:1}}>
+                      <div style={{fontSize:11,color:C.muted,fontWeight:600,marginBottom:4}}>START DATE</div>
+                      <input type="date" value={editForm.start||""} onChange={e=>setEditForm(f=>({...f,start:e.target.value}))}
+                        style={{width:"100%",padding:"9px 12px",borderRadius:7,border:`1px solid ${C.border}`,
+                          fontSize:13,color:C.text,outline:"none",boxSizing:"border-box"}}/>
+                    </div>
+                    <div style={{flex:1}}>
+                      <div style={{fontSize:11,color:C.muted,fontWeight:600,marginBottom:4}}>TARGET DATE</div>
+                      <input type="date" value={editForm.targetDate||""} onChange={e=>setEditForm(f=>({...f,targetDate:e.target.value}))}
+                        style={{width:"100%",padding:"9px 12px",borderRadius:7,border:`1px solid ${C.border}`,
+                          fontSize:13,color:C.text,outline:"none",boxSizing:"border-box"}}/>
+                    </div>
                   </div>
                 </div>
                 <div style={{display:"flex",gap:8}}>
@@ -1384,7 +1469,7 @@ th{padding:10px 12px;color:#fff;font-size:11px;font-weight:700;text-align:left;w
                         padding:"6px 12px",cursor:"pointer",fontSize:11,fontWeight:700}}>
                       📷 PNG
                     </button>
-                    <button onClick={()=>{setEditId(active.id);setEditForm({label:active.label,from:active.from,to:active.to,targetDate:active.targetDate||""});}}
+                    <button onClick={()=>{setEditId(active.id);setEditForm({label:active.label,from:active.from,to:active.to,start:active.start||active.createdAt||todayStr(),targetDate:active.targetDate||""});}}
                       style={{background:"#eef0f7",color:C.navy,border:`1px solid ${C.border}`,
                         borderRadius:7,padding:"6px 12px",cursor:"pointer",fontSize:11,fontWeight:600}}>
                       ✏️ Edit
@@ -1420,124 +1505,130 @@ th{padding:10px 12px;color:#fff;font-size:11px;font-weight:700;text-align:left;w
             )}
           </div>
 
-          {/* Tower status table */}
-          {towers.length>0&&(
-            <div style={{overflowX:"auto",borderRadius:12,border:`1px solid ${C.border}`}}>
-              <table style={{width:"100%",borderCollapse:"collapse",fontSize:12,
-                minWidth:Math.max(300,90+config.subActivities.length*50)}}>
-                <thead style={{position:"sticky",top:0,zIndex:5}}>
-                  <tr style={{background:C.navy}}>
-                    <th style={{padding:"10px 12px",color:"#fff",fontWeight:700,textAlign:"left",
-                      whiteSpace:"nowrap",position:"sticky",left:0,background:C.navy,zIndex:6,
-                      borderRight:`1px solid rgba(255,255,255,0.15)`}}>
-                      TOWER
-                    </th>
-                    <th style={{padding:"10px 10px",color:"rgba(255,255,255,0.65)",fontWeight:500,
-                      textAlign:"left",whiteSpace:"nowrap",fontSize:10,
-                      borderRight:`1px solid rgba(255,255,255,0.1)`}}>
-                      TYPE
-                    </th>
-                    {config.subActivities.map((sa,i)=>(
-                      <th key={sa.key} title={sa.name}
-                        style={{padding:"10px 6px",color:"rgba(255,255,255,0.9)",fontWeight:600,
-                          textAlign:"center",fontSize:10,minWidth:46,
-                          borderLeft:`1px solid rgba(255,255,255,0.1)`}}>
-                        {i+1}
-                      </th>
-                    ))}
-                    <th style={{padding:"10px 8px",color:"rgba(255,255,255,0.65)",fontWeight:600,
-                      textAlign:"center",fontSize:10,minWidth:40}}>
-                      %
-                    </th>
-                  </tr>
-                  {/* Activity name sub-row */}
-                  <tr style={{background:"#e8edf8",borderBottom:`2px solid ${C.border}`}}>
-                    <td style={{padding:"3px 12px",fontSize:9,color:C.navy,fontWeight:700,
-                      position:"sticky",left:0,background:"#e8edf8",zIndex:6,
-                      borderRight:`1px solid ${C.border}`}}>
-                      {towers.length} towers
-                    </td>
-                    <td style={{borderRight:`1px solid ${C.border}`}}></td>
-                    {config.subActivities.map(sa=>(
-                      <td key={sa.key} style={{padding:"3px 3px",fontSize:9,color:C.navy,fontWeight:600,
-                        textAlign:"center",borderLeft:`1px solid ${C.border}`,lineHeight:1.2,
-                        whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",maxWidth:46}}>
-                        {sa.name.length>8?sa.name.slice(0,7)+"…":sa.name}
-                      </td>
-                    ))}
-                    <td></td>
-                  </tr>
-                </thead>
-                <tbody>
-                  {towers.map((loc,ri)=>{
-                    const unit  =currSeg?.units.find(u=>u.loc===loc);
-                    const st    =towerStatus(seg,loc);
-                    const doneC =Object.values(st).filter(v=>v==="done").length;
-                    const tPct  =config.subActivities.length?Math.round(doneC/config.subActivities.length*100):0;
-                    const bg    =ri%2===0?"#ffffff":"#f8f9fc";
-                    return (
-                      <tr key={loc}>
-                        <td style={{padding:"8px 12px",fontFamily:MONO,fontWeight:700,color:C.text,
-                          borderBottom:`1px solid ${C.border}`,background:bg,
-                          position:"sticky",left:0,zIndex:1,whiteSpace:"nowrap",
-                          borderRight:`1px solid ${C.border}`}}>
-                          {loc}
-                        </td>
-                        <td style={{padding:"8px 10px",fontFamily:MONO,fontSize:10,color:C.muted,
-                          borderBottom:`1px solid ${C.border}`,background:bg,whiteSpace:"nowrap",
-                          borderRight:`1px solid ${C.border}`}}>
-                          {unit?.type||"–"}
-                        </td>
-                        {config.subActivities.map(sa=>{
-                          const s=sStyle(st[sa.key]||"pending");
-                          return (
-                            <td key={sa.key} style={{padding:"6px 4px",textAlign:"center",
-                              borderBottom:`1px solid ${C.border}`,borderLeft:`1px solid #eef0f7`,
-                              background:bg}}>
-                              <span style={{background:s.bg,color:s.fg,borderRadius:6,
-                                padding:"3px 7px",fontWeight:700,fontSize:13,
-                                border:`1.5px solid ${s.bdr}`,display:"inline-block",
-                                boxShadow:st[sa.key]!=="pending"?`0 1px 4px ${s.bdr}44`:"none"}}>
-                                {s.icon}
-                              </span>
-                            </td>
-                          );
-                        })}
-                        <td style={{padding:"8px 8px",textAlign:"center",
-                          borderBottom:`1px solid ${C.border}`,background:bg,
-                          fontWeight:700,fontSize:11,
-                          color:tPct===100?C.green:tPct>0?C.amber:C.muted}}>
-                          {tPct}%
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-                {/* Summary footer */}
-                <tfoot>
-                  <tr style={{background:"#eef0f7"}}>
-                    <td colSpan={2} style={{padding:"9px 12px",fontWeight:700,fontSize:12,color:C.text,
-                      position:"sticky",left:0,background:"#eef0f7"}}>
-                      TOTAL ({towers.length})
-                    </td>
-                    {config.subActivities.map(sa=>{
-                      const dC=towers.filter(loc=>towerStatus(seg,loc)[sa.key]==="done").length;
-                      const iC=towers.filter(loc=>towerStatus(seg,loc)[sa.key]==="ip").length;
-                      return (
-                        <td key={sa.key} style={{padding:"8px 4px",textAlign:"center"}}>
-                          <div style={{fontSize:11,fontWeight:700,color:C.green}}>✓{dC}</div>
-                          {iC>0&&<div style={{fontSize:10,color:C.yellow}}>▶{iC}</div>}
-                          <div style={{fontSize:10,color:C.muted}}>○{towers.length-dC-iC}</div>
-                        </td>
-                      );
-                    })}
-                    <td style={{padding:"8px 8px",textAlign:"center",fontWeight:700,fontSize:13,
-                      color:pct>=90?C.green:pct>=50?C.amber:C.muted}}>
-                      {pct}%
-                    </td>
-                  </tr>
-                </tfoot>
-              </table>
+          {/* ── Stacked per-location grid: activities (rows) × dates (cols) ── */}
+          {towers.length>0&&dateCols.length>0&&(
+            <div>
+              {/* Legend */}
+              <div style={{display:"flex",gap:14,flexWrap:"wrap",alignItems:"center",
+                fontSize:11,color:C.muted,margin:"2px 2px 12px"}}>
+                <span><b style={{color:C.text}}>Dates:</b> {dateCols[0]} → {dateCols[dateCols.length-1]} ({dateCols.length}d)</span>
+                <span style={{display:"inline-flex",alignItems:"center",gap:5}}>
+                  <span style={{width:18,height:18,borderRadius:4,background:"#eafaf0",border:"1.5px solid #3fb950",
+                    display:"inline-flex",alignItems:"center",justifyContent:"center",color:"#1a7a35",fontSize:11,fontWeight:700}}>✓</span> Completed
+                </span>
+                <span style={{display:"inline-flex",alignItems:"center",gap:5}}>
+                  <span style={{width:18,height:18,borderRadius:4,background:"#eef3ff",border:"1.5px dashed #6b8fd6",
+                    display:"inline-flex",alignItems:"center",justifyContent:"center",color:"#2a5a9a",fontSize:11,fontWeight:700}}>P</span> Planned
+                </span>
+                <span style={{display:"inline-flex",alignItems:"center",gap:5}}>
+                  <span style={{width:18,height:18,borderRadius:4,background:"#fff0f0",border:"1.5px solid #ffaaaa",
+                    display:"inline-flex",alignItems:"center",justifyContent:"center",color:"#cc2222",fontSize:11,fontWeight:700}}>P</span> Overdue
+                </span>
+                <span style={{marginLeft:"auto"}}>Tap a cell to set / clear a plan</span>
+              </div>
+
+              {towers.map(loc=>{
+                const unit  =currSeg?.units.find(u=>u.loc===loc);
+                const st    =towerStatus(seg,loc);
+                const doneC =Object.values(st).filter(v=>v==="done").length;
+                const tPct  =config.subActivities.length?Math.round(doneC/config.subActivities.length*100):0;
+                const planForLoc=active.plan?.[loc]||{};
+                return (
+                  <div key={loc} style={{marginBottom:16,border:`1px solid ${C.border}`,
+                    borderRadius:12,overflow:"hidden"}}>
+                    {/* Location header */}
+                    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,
+                      padding:"9px 14px",background:"#f0f4fa",borderBottom:`1px solid ${C.border}`}}>
+                      <div style={{display:"flex",alignItems:"center",gap:10}}>
+                        <span style={{fontFamily:MONO,fontWeight:800,fontSize:14,color:C.text}}>{loc}</span>
+                        <span style={{fontFamily:MONO,fontSize:10,color:C.muted}}>{unit?.type||"–"}</span>
+                      </div>
+                      <span style={{fontSize:11,fontWeight:700,
+                        color:tPct===100?C.green:tPct>0?C.amber:C.muted}}>
+                        {doneC}/{config.subActivities.length} · {tPct}%
+                      </span>
+                    </div>
+                    {/* activities (rows) × dates (cols) */}
+                    <div style={{overflowX:"auto",WebkitOverflowScrolling:"touch"}}>
+                      <table style={{borderCollapse:"collapse",fontSize:11,
+                        minWidth:170+dateCols.length*40}}>
+                        <thead>
+                          <tr style={{background:C.navy}}>
+                            <th style={{padding:"7px 10px",color:"#fff",fontWeight:700,textAlign:"left",
+                              position:"sticky",left:0,background:C.navy,zIndex:2,minWidth:160,
+                              borderRight:"2px solid rgba(255,255,255,0.2)",fontSize:11}}>
+                              ACTIVITY
+                            </th>
+                            {dateCols.map(dt=>{
+                              const c=schedColLabel(dt); const isToday=dt===todayStr();
+                              return (
+                                <th key={dt} style={{padding:"5px 2px",minWidth:38,textAlign:"center",
+                                  color:isToday?"#ffd479":"rgba(255,255,255,0.9)",
+                                  background:isToday?"#13314f":C.navy,
+                                  borderLeft:"1px solid rgba(255,255,255,0.08)",fontSize:9,lineHeight:1.25}}>
+                                  <div style={{fontWeight:700}}>{c.day}</div>
+                                  <div style={{opacity:0.7}}>{c.mon}</div>
+                                  <div style={{opacity:0.5,fontSize:8}}>{c.wd}</div>
+                                </th>
+                              );
+                            })}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {config.subActivities.map((sa,ai)=>{
+                            const rowBg=ai%2===0?"#ffffff":"#f8f9fc";
+                            const status=st[sa.key]||"pending";
+                            const todayDone=(daily?.[seg]?.[sa.key]?.done||[]).includes(loc);
+                            const doneDate=histDone?.[seg]?.[sa.key]?.[loc]||(todayDone?todayStr():null);
+                            const plannedDate=planForLoc[sa.key]||null;
+                            return (
+                              <tr key={sa.key}>
+                                <td title={sa.name}
+                                  style={{padding:"6px 10px",fontSize:11,color:C.text,fontWeight:600,
+                                    background:rowBg,position:"sticky",left:0,zIndex:1,whiteSpace:"nowrap",
+                                    overflow:"hidden",textOverflow:"ellipsis",maxWidth:170,
+                                    borderRight:`1px solid ${C.border}`,borderBottom:`1px solid ${C.border}`}}>
+                                  <span style={{color:status==="done"?C.green:status==="ip"?C.yellow:C.muted,marginRight:5}}>
+                                    {status==="done"?"✓":status==="ip"?"▶":"○"}
+                                  </span>
+                                  {ai+1}. {sa.name.length>16?sa.name.slice(0,15)+"…":sa.name}
+                                </td>
+                                {dateCols.map((dt,di)=>{
+                                  const isFirst=di===0;
+                                  const completedHere=status==="done" && (doneDate?doneDate===dt:isFirst);
+                                  const isPlanned=plannedDate===dt;
+                                  const overdue=isPlanned && status!=="done" && dt<todayStr();
+                                  const isToday=dt===todayStr();
+                                  let cell=null;
+                                  if (completedHere) cell={bg:"#eafaf0",fg:"#1a7a35",bd:"#3fb950",t:"✓",solid:true};
+                                  else if (isPlanned) cell=overdue
+                                    ?{bg:"#fff0f0",fg:"#cc2222",bd:"#ffaaaa",t:"P",solid:true}
+                                    :{bg:"#eef3ff",fg:"#2a5a9a",bd:"#6b8fd6",t:"P",solid:false};
+                                  return (
+                                    <td key={dt} onClick={()=>togglePlan(loc,sa.key,dt)}
+                                      style={{padding:"3px 2px",textAlign:"center",cursor:"pointer",
+                                        background:isToday?"#fafcff":rowBg,
+                                        borderLeft:`1px solid #eef0f7`,borderBottom:`1px solid ${C.border}`}}>
+                                      {cell&&(
+                                        <span style={{display:"inline-flex",alignItems:"center",justifyContent:"center",
+                                          width:22,height:22,borderRadius:5,fontSize:11,fontWeight:700,
+                                          background:cell.bg,color:cell.fg,
+                                          border:`1.5px ${cell.solid?"solid":"dashed"} ${cell.bd}`}}>
+                                          {cell.t}
+                                        </span>
+                                      )}
+                                    </td>
+                                  );
+                                })}
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           )}
 
@@ -1545,6 +1636,12 @@ th{padding:10px 12px;color:#fff;font-size:11px;font-weight:700;text-align:left;w
             <div style={{textAlign:"center",padding:30,color:"#cc2222",fontSize:13,
               background:C.card,borderRadius:12,border:`1px solid #ffaaaa`}}>
               ⚠ Tower range not found. Please edit the schedule.
+            </div>
+          )}
+          {active&&towers.length>0&&dateCols.length===0&&(
+            <div style={{textAlign:"center",padding:30,color:"#cc2222",fontSize:13,
+              background:C.card,borderRadius:12,border:`1px solid #ffaaaa`}}>
+              ⚠ Set a valid <b>Start</b> and <b>Target</b> date (tap ✏️ Edit) to build the date columns.
             </div>
           )}
         </div>
