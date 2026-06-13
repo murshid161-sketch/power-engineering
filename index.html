@@ -1072,6 +1072,7 @@ function ScheduleTab({config, cum, daily, cfgKey, project, mainActivity, date, w
   const [msg, setMsg]             = useState("");
   // histDone[segId][saKey][loc] = earliest date that activity was completed (from DPR history)
   const [histDone, setHistDone]   = useState({});
+  const [hideDone, setHideDone]   = useState(false);  // hide completed activity rows across the schedule
 
   const schedKey = "schedule_" + cfgKey;
 
@@ -1123,14 +1124,24 @@ function ScheduleTab({config, cum, daily, cfgKey, project, mainActivity, date, w
     return ()=>{ cancelled=true; };
   },[cfgKey, config]);
 
-  // Toggle a planned date for (location, activity) on the active schedule.
+  // Plan = a date range {s,e}. 1st tap sets the start (pending), 2nd tap sets the end
+  // and fills the whole span. Tapping inside a finished range clears it; tapping the
+  // pending start again cancels it.
   async function togglePlan(loc, saKey, dt) {
     if (!active) return;
-    const cur=active.plan?.[loc]?.[saKey];
     const newPlan=JSON.parse(JSON.stringify(active.plan||{}));
     newPlan[loc]=newPlan[loc]||{};
-    if (cur===dt) delete newPlan[loc][saKey];
-    else newPlan[loc][saKey]=dt;
+    let cur=newPlan[loc][saKey];
+    if (typeof cur==="string") cur={s:cur,e:cur};       // migrate old single-date plans
+    if (!cur || !cur.s) {
+      newPlan[loc][saKey]={s:dt,e:null};                // begin selection
+    } else if (cur.s && !cur.e) {
+      if (dt===cur.s) delete newPlan[loc][saKey];       // cancel pending start
+      else newPlan[loc][saKey]= dt<cur.s?{s:dt,e:cur.s}:{s:cur.s,e:dt};  // close range
+    } else {
+      if (dt>=cur.s && dt<=cur.e) delete newPlan[loc][saKey];  // tap inside → clear
+      else newPlan[loc][saKey]={s:dt,e:null};                  // start a new selection
+    }
     const next={...schedules,[seg]:schedules[seg].map(s=>s.id===active.id?{...s,plan:newPlan}:s)};
     await saveAll(next);
   }
@@ -1524,7 +1535,16 @@ th{padding:10px 12px;color:#fff;font-size:11px;font-weight:700;text-align:left;w
                   <span style={{width:18,height:18,borderRadius:4,background:"#fff0f0",border:"1.5px solid #ffaaaa",
                     display:"inline-flex",alignItems:"center",justifyContent:"center",color:"#cc2222",fontSize:11,fontWeight:700}}>P</span> Overdue
                 </span>
-                <span style={{marginLeft:"auto"}}>Tap a cell to set / clear a plan</span>
+                <button onClick={()=>setHideDone(h=>!h)}
+                  style={{marginLeft:"auto",padding:"5px 12px",borderRadius:20,cursor:"pointer",
+                    fontSize:11,fontWeight:700,whiteSpace:"nowrap",
+                    border:`1.5px solid ${hideDone?C.green:C.border}`,
+                    background:hideDone?"#eafaf0":C.card,color:hideDone?C.green:C.muted}}>
+                  {hideDone?"👁 Show completed":"🙈 Hide completed"}
+                </button>
+              </div>
+              <div style={{fontSize:10,color:C.muted,margin:"-6px 2px 12px"}}>
+                Tap a cell to set the plan <b>start</b>, then tap another to set the <b>end</b> — the whole span fills with P. Tap inside a planned range to clear it.
               </div>
 
               {towers.map(loc=>{
@@ -1575,12 +1595,17 @@ th{padding:10px 12px;color:#fff;font-size:11px;font-weight:700;text-align:left;w
                           </tr>
                         </thead>
                         <tbody>
-                          {config.subActivities.map((sa,ai)=>{
+                          {config.subActivities
+                            .map((sa,ai)=>({sa,ai}))
+                            .filter(({sa})=> !(hideDone && (st[sa.key]||"pending")==="done"))
+                            .map(({sa,ai})=>{
                             const rowBg=ai%2===0?"#ffffff":"#f8f9fc";
                             const status=st[sa.key]||"pending";
                             const todayDone=(daily?.[seg]?.[sa.key]?.done||[]).includes(loc);
                             const doneDate=histDone?.[seg]?.[sa.key]?.[loc]||(todayDone?todayStr():null);
-                            const plannedDate=planForLoc[sa.key]||null;
+                            const rawPlan=planForLoc[sa.key];
+                            const sp=rawPlan?(typeof rawPlan==="string"?{s:rawPlan,e:rawPlan}:rawPlan):null;
+                            const pending=sp && sp.s && !sp.e;
                             return (
                               <tr key={sa.key}>
                                 <td title={sa.name}
@@ -1596,33 +1621,45 @@ th{padding:10px 12px;color:#fff;font-size:11px;font-weight:700;text-align:left;w
                                 {dateCols.map((dt,di)=>{
                                   const isFirst=di===0;
                                   const completedHere=status==="done" && (doneDate?doneDate===dt:isFirst);
-                                  const isPlanned=plannedDate===dt;
-                                  const overdue=isPlanned && status!=="done" && dt<todayStr();
+                                  const inPlan=sp && sp.s && (sp.e?(dt>=sp.s&&dt<=sp.e):dt===sp.s);
+                                  const overdue=inPlan && status!=="done" && dt<todayStr();
                                   const isToday=dt===todayStr();
-                                  let cell=null;
+                                  const isStart=sp&&dt===sp.s, isEnd=sp&&(sp.e?dt===sp.e:true);
+                                  let cell=null, isBar=false;
                                   if (completedHere) cell={bg:"#eafaf0",fg:"#1a7a35",bd:"#3fb950",t:"✓",solid:true};
-                                  else if (isPlanned) cell=overdue
-                                    ?{bg:"#fff0f0",fg:"#cc2222",bd:"#ffaaaa",t:"P",solid:true}
-                                    :{bg:"#eef3ff",fg:"#2a5a9a",bd:"#6b8fd6",t:"P",solid:false};
+                                  else if (inPlan) {
+                                    isBar=true;
+                                    cell = overdue ? {bg:"#fff0f0",fg:"#cc2222",bd:"#ffaaaa",solid:true}
+                                         : pending ? {bg:"#fff8ec",fg:"#b06000",bd:"#e09030",solid:false}
+                                         :           {bg:"#eef3ff",fg:"#2a5a9a",bd:"#6b8fd6",solid:false};
+                                  }
+                                  const rad=isBar?`${isStart?6:0}px ${isEnd?6:0}px ${isEnd?6:0}px ${isStart?6:0}px`:5;
                                   return (
                                     <td key={dt} onClick={()=>togglePlan(loc,sa.key,dt)}
-                                      style={{padding:"3px 2px",textAlign:"center",cursor:"pointer",
+                                      title={pending?"Tap another date to set the plan end":undefined}
+                                      style={{padding:isBar?"3px 0":"3px 2px",textAlign:"center",cursor:"pointer",
                                         background:isToday?"#fafcff":rowBg,
                                         borderLeft:`1px solid #eef0f7`,borderBottom:`1px solid ${C.border}`}}>
-                                      {cell&&(
+                                      {cell&&(isBar?(
+                                        <span style={{display:"block",height:22,lineHeight:"19px",fontSize:11,fontWeight:700,
+                                          background:cell.bg,color:cell.fg,borderRadius:rad,
+                                          border:`1.5px ${cell.solid?"solid":"dashed"} ${cell.bd}`}}>P</span>
+                                      ):(
                                         <span style={{display:"inline-flex",alignItems:"center",justifyContent:"center",
                                           width:22,height:22,borderRadius:5,fontSize:11,fontWeight:700,
                                           background:cell.bg,color:cell.fg,
-                                          border:`1.5px ${cell.solid?"solid":"dashed"} ${cell.bd}`}}>
-                                          {cell.t}
-                                        </span>
-                                      )}
+                                          border:`1.5px ${cell.solid?"solid":"dashed"} ${cell.bd}`}}>{cell.t}</span>
+                                      ))}
                                     </td>
                                   );
                                 })}
                               </tr>
                             );
                           })}
+                          {hideDone && config.subActivities.every(sa=>(st[sa.key]||"pending")==="done") && (
+                            <tr><td colSpan={dateCols.length+1} style={{padding:"10px 12px",fontSize:11,
+                              color:C.green,fontWeight:700,background:"#f8fdf9"}}>✓ All activities completed for this location</td></tr>
+                          )}
                         </tbody>
                       </table>
                     </div>
