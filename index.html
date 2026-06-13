@@ -11,7 +11,7 @@
        BUILD must equal the "v" value in version.json. Bump BOTH on every deploy. -->
   <script>
   (function(){
-    var BUILD="2026-06-13.12";
+    var BUILD="2026-06-13.13";
     try{
       fetch("version.json?ts="+Date.now(),{cache:"no-store"})
         .then(function(r){return r.ok?r.json():null;})
@@ -1093,6 +1093,7 @@ function ScheduleTab({config, cum, daily, cfgKey, project, mainActivity, date, w
   // histDone[segId][saKey][loc] = earliest date that activity was completed (from DPR history)
   const [histDone, setHistDone]   = useState({});
   const [hideDone, setHideDone]   = useState(false);  // hide completed activity rows across the schedule
+  const [schedView, setSchedView] = useState(()=>lsGet("schedView")||"grid"); // "grid" | "range"
 
   const schedKey = "schedule_" + cfgKey;
 
@@ -1319,22 +1320,55 @@ function ScheduleTab({config, cum, daily, cfgKey, project, mainActivity, date, w
     return {html, width:totalW};
   }
 
+  // Range-table HTML (per-activity contiguous tower ranges) for PNG export.
+  function buildSchedRangeHTML(active, towers) {
+    const cs=config.segments.find(s=>s.id===seg);
+    const ranges=buildSchedRanges();
+    if (!ranges.length) return null;
+    const md=dt=>{const c=schedColLabel(dt);return `${c.mon} ${c.day}`;};
+    const rws=ranges.map((r,i)=>{
+      const bg=i%2===0?"#fff":"#f8f9fc";
+      const overdue=r.e<todayStr();
+      const rng=r.from!==r.to?`${r.from} &rarr; ${r.to}`:r.from;
+      const span=r.s===r.e?md(r.s):`${md(r.s)} &rarr; ${md(r.e)}`;
+      return `<tr>
+        <td style="padding:9px 16px;background:${bg};font-weight:600;font-size:12px;color:#1a1a2e;border-bottom:1px solid #eef0f7;white-space:nowrap;">${r.saName}</td>
+        <td style="padding:9px 16px;background:${bg};font-family:'Courier New',monospace;font-weight:800;font-size:12px;color:#1a3a5c;text-align:center;border-bottom:1px solid #eef0f7;white-space:nowrap;">${rng}</td>
+        <td style="padding:9px 10px;background:${bg};text-align:center;font-size:12px;color:#607080;border-bottom:1px solid #eef0f7;">${r.count}</td>
+        <td style="padding:9px 16px;background:${bg};text-align:center;border-bottom:1px solid #eef0f7;"><span style="background:${overdue?"#fff0f0":"#eef3ff"};border:1.5px solid ${overdue?"#ffaaaa":"#6b8fd6"};border-radius:6px;padding:3px 10px;color:${overdue?"#cc2222":"#2a5a9a"};font-weight:700;font-size:12px;white-space:nowrap;">${span}</span></td>
+      </tr>`;
+    }).join("");
+    const width=640;
+    const html=`<!DOCTYPE html><html><head><meta charset="UTF-8"/><style>*{box-sizing:border-box;margin:0;padding:0;}body{font-family:'Segoe UI',system-ui,sans-serif;background:#dde2ee;padding:20px;}.page{background:#fff;width:${width}px;margin:0 auto;border-radius:8px;overflow:hidden;box-shadow:0 6px 32px rgba(0,0,0,0.2);}.hdr{background:linear-gradient(135deg,#1a3a5c,#2a5a9a);padding:16px 22px;display:flex;justify-content:space-between;align-items:flex-start;}.brand{color:#fff;font-size:20px;font-weight:900;}.brand em{color:#e07b00;font-style:normal;}.meta{color:rgba(255,255,255,0.6);font-size:10px;margin-top:3px;}.rpt{color:#fff;font-size:14px;font-weight:800;margin-top:5px;}.badge{background:rgba(255,255,255,0.2);border-radius:6px;padding:3px 12px;color:#fff;font-size:11px;font-weight:700;}table{width:100%;border-collapse:collapse;}th{padding:9px 16px;background:#22395a;color:#fff;font-size:11px;font-weight:700;text-align:left;white-space:nowrap;}.footer{padding:8px 22px;text-align:center;font-size:9px;color:#8090b0;border-top:2px solid #1a3a5c;}</style></head><body><div class="page"><div class="hdr"><div><div class="brand">L<em>&amp;</em>T CONSTRUCTION</div><div class="meta">${project.name} · ${mainActivity.name} · ${cs?.name}</div><div class="rpt">&#x1F5D3; SCHEDULE &mdash; RANGES</div></div><div style="text-align:right;"><div class="badge">${active.label}</div><div style="color:rgba(255,255,255,0.5);font-size:9px;margin-top:5px;">${ranges.length} ranges</div></div></div><table><thead><tr><th>ACTIVITY</th><th style="text-align:center;">FROM &rarr; TO</th><th style="text-align:center;">TOWERS</th><th style="text-align:center;">PLANNED</th></tr></thead><tbody>${rws}</tbody></table><div class="footer">L&amp;T Construction · ${date}</div></div></body></html>`;
+    return {html,width};
+  }
+
   function downloadSchedulePNG(active, towers, dateCols) {
-    if (!active||!towers.length||!dateCols.length||!window.html2canvas){flash("Nothing to export");return;}
-    const built=buildScheduleHTML(active, towers, dateCols);
-    const w=Math.max(900, built.width+40);
+    if (!window.html2canvas){flash("html2canvas not ready");return;}
+    if (!active||!towers.length){flash("Nothing to export");return;}
+    let html, width;
+    if (schedView==="range") {
+      const r=buildSchedRangeHTML(active, towers);
+      if (!r){flash("No plans to export");return;}
+      html=r.html; width=r.width;
+    } else {
+      if (!dateCols.length){flash("Set start/target dates first");return;}
+      const built=buildScheduleHTML(active, towers, dateCols);
+      html=built.html; width=built.width;
+    }
+    const w=Math.max(700, width+40);
     const iframe=document.createElement("iframe");
     iframe.style.cssText=`position:fixed;left:-9999px;top:-9999px;width:${w}px;height:1px;border:none;`;
     document.body.appendChild(iframe);
-    iframe.contentDocument.open(); iframe.contentDocument.write(built.html); iframe.contentDocument.close();
+    iframe.contentDocument.open(); iframe.contentDocument.write(html); iframe.contentDocument.close();
     flash("⏳ Rendering image…");
     setTimeout(()=>{
       const pg=iframe.contentDocument.querySelector(".page");
       if (!pg){document.body.removeChild(iframe);flash("PNG error");return;}
-      const scale=built.width>1500?1:2;
+      const scale=width>1500?1:2;
       window.html2canvas(pg,{scale,useCORS:true,backgroundColor:"#dde2ee"}).then(canvas=>{
         const link=document.createElement("a");
-        link.download=`Schedule-${project.name}-${active.label}-${date}.png`;
+        link.download=`Schedule-${schedView==="range"?"Range-":""}${project.name}-${active.label}-${date}.png`;
         link.href=canvas.toDataURL("image/png"); link.click();
         document.body.removeChild(iframe); flash("📷 PNG downloaded!");
       }).catch(err=>{document.body.removeChild(iframe);flash("PNG error: "+err.message);});
@@ -1344,9 +1378,24 @@ function ScheduleTab({config, cum, daily, cfgKey, project, mainActivity, date, w
   // Export the schedule (dates × activities, per location) to an .xlsx workbook.
   function downloadScheduleExcel(active, towers, dateCols) {
     if (!window.XLSX){flash("Excel library not ready");return;}
-    if (!active||!towers.length||!dateCols.length){flash("Nothing to export");return;}
+    if (!active||!towers.length){flash("Nothing to export");return;}
     const sas=config.subActivities;
     const currSeg=config.segments.find(s=>s.id===seg);
+    if (schedView==="range") {
+      const ranges=buildSchedRanges();
+      if (!ranges.length){flash("No plans to export");return;}
+      const md=dt=>{const c=schedColLabel(dt);return `${c.mon} ${c.day}`;};
+      const rows=[[`Schedule (Range): ${active.label}`],[`Range: ${active.from} → ${active.to}`],[],
+        ["ACTIVITY","FROM","TO","TOWERS","PLANNED START","PLANNED END"],
+        ...ranges.map(r=>[r.saName,r.from,r.to,r.count,md(r.s),md(r.e)])];
+      const ws=window.XLSX.utils.aoa_to_sheet(rows);
+      ws["!cols"]=[{wch:26},{wch:10},{wch:10},{wch:8},{wch:13},{wch:13}];
+      const wb=window.XLSX.utils.book_new();
+      window.XLSX.utils.book_append_sheet(wb, ws, "Schedule-Range");
+      window.XLSX.writeFile(wb, `Schedule-Range-${project.name}-${active.label}-${date}.xlsx`);
+      flash("\u{1F4E5} Excel downloaded!"); return;
+    }
+    if (!dateCols.length){flash("Set start/target dates first");return;}
     const dateHdr=dateCols.map(dt=>{const c=schedColLabel(dt);return `${c.day} ${c.mon}`;});
     const aoa=[];
     aoa.push([`Schedule: ${active.label}`]);
@@ -1400,6 +1449,28 @@ function ScheduleTab({config, cum, daily, cfgKey, project, mainActivity, date, w
   const schedStart = active?(active.start||active.createdAt||todayStr()):null;
   const schedEnd   = active?(active.targetDate||""):null;
   const dateCols   = active?schedDateRange(schedStart, schedEnd):[];
+
+  // "Jun 13" for a date; span text for a plan range.
+  const fmtMD = dt => { const c=schedColLabel(dt); return `${c.mon} ${c.day}`; };
+  // Collapse consecutive towers sharing the same plan span into ranges, per activity.
+  function buildSchedRanges(){
+    const out=[];
+    config.subActivities.forEach(sa=>{
+      let run=null;
+      const flush=()=>{ if(run){ out.push({saName:sa.name,from:run.from,to:run.to,count:run.count,s:run.s,e:run.e}); run=null; } };
+      towers.forEach(loc=>{
+        const raw=active?.plan?.[loc]?.[sa.key];
+        const sp=raw?(typeof raw==="string"?{s:raw,e:raw}:raw):null;
+        if(sp&&sp.s){
+          const e=sp.e||sp.s, key=`${sp.s}|${e}`;
+          if(run&&run.key===key){ run.to=loc; run.count++; }
+          else { flush(); run={from:loc,to:loc,count:1,key,s:sp.s,e}; }
+        } else flush();
+      });
+      flush();
+    });
+    return out;
+  }
 
   return (
     <div style={{fontFamily:"'Segoe UI',system-ui,sans-serif"}}>
@@ -1622,8 +1693,24 @@ function ScheduleTab({config, cum, daily, cfgKey, project, mainActivity, date, w
             )}
           </div>
 
+          {/* View toggle: per-location grid ↔ range table */}
+          {towers.length>0&&(
+            <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12,flexWrap:"wrap"}}>
+              <span style={{fontSize:11,color:C.muted,fontWeight:600}}>View:</span>
+              {[["grid","Grid (per location)"],["range","Range table"]].map(([v,lbl])=>(
+                <button key={v} onClick={()=>{setSchedView(v);lsSet("schedView",v);}}
+                  style={{padding:"5px 11px",borderRadius:20,
+                    border:`1.5px solid ${schedView===v?C.amber:C.border}`,
+                    background:schedView===v?"#fff8ec":C.card,color:schedView===v?C.amber:C.muted,
+                    cursor:"pointer",fontSize:11,fontWeight:schedView===v?700:500,whiteSpace:"nowrap"}}>
+                  {lbl}
+                </button>
+              ))}
+            </div>
+          )}
+
           {/* ── Stacked per-location grid: activities (rows) × dates (cols) ── */}
-          {towers.length>0&&dateCols.length>0&&(
+          {schedView==="grid"&&towers.length>0&&dateCols.length>0&&(
             <div>
               {/* Legend */}
               <div style={{display:"flex",gap:14,flexWrap:"wrap",alignItems:"center",
@@ -1775,13 +1862,56 @@ function ScheduleTab({config, cum, daily, cfgKey, project, mainActivity, date, w
             </div>
           )}
 
+          {/* ── Range table: contiguous tower ranges per activity ── */}
+          {schedView==="range"&&towers.length>0&&(()=>{
+            const ranges=buildSchedRanges();
+            if(!ranges.length) return (
+              <div style={{textAlign:"center",padding:30,color:C.muted,fontSize:13,
+                background:C.card,borderRadius:12,border:`1px solid ${C.border}`}}>
+                📅 No plans set yet — switch to Grid view, tap cells to plan a span, then come back.
+              </div>
+            );
+            return (
+              <div style={{overflowX:"auto",WebkitOverflowScrolling:"touch",borderRadius:12,border:`1px solid ${C.border}`}}>
+                <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+                  <thead><tr style={{background:C.navy}}>
+                    <th style={{padding:"9px 12px",color:"#fff",fontWeight:700,fontSize:11,textAlign:"left",minWidth:150}}>ACTIVITY</th>
+                    <th style={{padding:"9px 12px",color:"#fff",fontWeight:700,fontSize:11,textAlign:"center",whiteSpace:"nowrap"}}>FROM → TO</th>
+                    <th style={{padding:"9px 8px",color:"rgba(255,255,255,0.8)",fontWeight:700,fontSize:11,textAlign:"center"}}>TOWERS</th>
+                    <th style={{padding:"9px 12px",color:"#fff",fontWeight:700,fontSize:11,textAlign:"center"}}>PLANNED</th>
+                  </tr></thead>
+                  <tbody>
+                    {ranges.map((r,i)=>{
+                      const overdue=r.e<todayStr();
+                      return (
+                        <tr key={i} style={{background:i%2===0?"#ffffff":"#f8f9fc"}}>
+                          <td style={{padding:"8px 12px",fontWeight:600,color:C.text,borderBottom:`1px solid ${C.border}`,whiteSpace:"nowrap"}}>{r.saName}</td>
+                          <td style={{padding:"8px 12px",fontFamily:MONO,fontWeight:700,color:C.navy,textAlign:"center",borderBottom:`1px solid ${C.border}`,whiteSpace:"nowrap"}}>
+                            {r.from}{r.from!==r.to?` → ${r.to}`:""}
+                          </td>
+                          <td style={{padding:"8px 8px",textAlign:"center",color:C.muted,borderBottom:`1px solid ${C.border}`}}>{r.count}</td>
+                          <td style={{padding:"8px 12px",textAlign:"center",borderBottom:`1px solid ${C.border}`}}>
+                            <span style={{background:overdue?"#fff0f0":"#eef3ff",border:`1.5px solid ${overdue?"#ffaaaa":"#6b8fd6"}`,
+                              borderRadius:6,padding:"3px 9px",color:overdue?"#cc2222":"#2a5a9a",fontWeight:700,fontSize:11,whiteSpace:"nowrap"}}>
+                              {r.s===r.e?fmtMD(r.s):`${fmtMD(r.s)} → ${fmtMD(r.e)}`}
+                            </span>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            );
+          })()}
+
           {active&&towers.length===0&&(
             <div style={{textAlign:"center",padding:30,color:"#cc2222",fontSize:13,
               background:C.card,borderRadius:12,border:`1px solid #ffaaaa`}}>
               ⚠ Tower range not found. Please edit the schedule.
             </div>
           )}
-          {active&&towers.length>0&&dateCols.length===0&&(
+          {schedView==="grid"&&active&&towers.length>0&&dateCols.length===0&&(
             <div style={{textAlign:"center",padding:30,color:"#cc2222",fontSize:13,
               background:C.card,borderRadius:12,border:`1px solid #ffaaaa`}}>
               ⚠ Set a valid <b>Start</b> and <b>Target</b> date (tap ✏️ Edit) to build the date columns.
