@@ -11,7 +11,7 @@
        BUILD must equal the "v" value in version.json. Bump BOTH on every deploy. -->
   <script>
   (function(){
-    var BUILD="2026-06-13.11";
+    var BUILD="2026-06-13.12";
     try{
       fetch("version.json?ts="+Date.now(),{cache:"no-store"})
         .then(function(r){return r.ok?r.json():null;})
@@ -2495,7 +2495,8 @@ function PlanningTab({config,cum,daily,cfgKey,project,mainActivity}){
   }
 
   // ── Range view: collapse consecutive towers with the same plan into ranges ──
-  function buildRanges(){
+  function buildRanges(){ return buildRangesScope({type:"current"}); }
+  function buildRangesScope(scope){
     const cs=config.segments.find(s=>s.id===seg);
     const units=cs?.units||[];
     const out=[];
@@ -2504,7 +2505,7 @@ function PlanningTab({config,cum,daily,cfgKey,project,mainActivity}){
       const flush=()=>{ if(run){ out.push({saName:sa.name,from:run.from,to:run.to,count:run.count,text:run.text}); run=null; } };
       units.forEach(u=>{
         const plan=getPlan(seg,u.loc,sa.key);
-        if(plan&&matchesView(plan)){
+        if(plan&&planMatchesScope(plan,scope)){
           const key=`${plan.type}:${plan.value}`;
           const text=plan.type==="day"?fmtD(plan.value):plan.value;
           if(run&&run.key===key){ run.to=u.loc; run.count++; }
@@ -2598,8 +2599,24 @@ function PlanningTab({config,cum,daily,cfgKey,project,mainActivity}){
   function buildPNGHtml(scope){
     const cs=config.segments.find(s=>s.id===seg);
     const sas=config.subActivities;
-    const units=getScopeUnits(scope);
     const lbl=getScopeLabel(scope);
+    if(planView==="range"){
+      const ranges=buildRangesScope(scope);
+      if(!ranges.length) return null;
+      const rws=ranges.map((r,i)=>{
+        const bg=i%2===0?"#fff":"#f8f9fc";
+        const rng=r.from!==r.to?`${r.from} &rarr; ${r.to}`:r.from;
+        return `<tr>
+          <td style="padding:9px 16px;background:${bg};font-weight:600;font-size:12px;color:#1a1a2e;border-bottom:1px solid #eef0f7;white-space:nowrap;">${r.saName}</td>
+          <td style="padding:9px 16px;background:${bg};font-family:'Courier New',monospace;font-weight:800;font-size:12px;color:#1a3a5c;text-align:center;border-bottom:1px solid #eef0f7;white-space:nowrap;">${rng}</td>
+          <td style="padding:9px 10px;background:${bg};text-align:center;font-size:12px;color:#607080;border-bottom:1px solid #eef0f7;">${r.count}</td>
+          <td style="padding:9px 16px;background:${bg};text-align:center;border-bottom:1px solid #eef0f7;"><span style="background:#fff9c4;border:1.5px solid #f9a825;border-radius:6px;padding:3px 10px;color:#e65100;font-weight:700;font-size:12px;white-space:nowrap;">${r.text}</span></td>
+        </tr>`;
+      }).join("");
+      const html=`<!DOCTYPE html><html><head><meta charset="UTF-8"/><style>*{box-sizing:border-box;margin:0;padding:0;}body{font-family:'Segoe UI',system-ui,sans-serif;background:#eef2f7;padding:20px;}.page{background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 6px 32px rgba(0,0,0,0.18);display:inline-block;min-width:560px;}.hdr{background:linear-gradient(135deg,#1a3a5c,#2a5a9a);padding:16px 22px;display:flex;justify-content:space-between;align-items:flex-start;}.brand{color:#fff;font-size:18px;font-weight:900;}.brand em{color:#e07b00;font-style:normal;}.meta{color:rgba(255,255,255,0.6);font-size:10px;margin-top:3px;}.rpt{color:#fff;font-size:14px;font-weight:800;margin-top:5px;}.badge{background:rgba(255,255,255,0.2);border-radius:6px;padding:3px 12px;color:#fff;font-size:11px;font-weight:700;display:inline-block;}table{width:100%;border-collapse:collapse;}th{padding:9px 16px;background:#22395a;color:#fff;font-size:11px;font-weight:700;text-align:left;white-space:nowrap;}.footer{padding:8px 22px;text-align:center;font-size:9px;color:#8090b0;border-top:2px solid #1a3a5c;}</style></head><body><div class="page"><div class="hdr"><div><div class="brand">L<em>&amp;</em>T CONSTRUCTION</div><div class="meta">${project.name} · ${mainActivity.name} · ${cs?.name}</div><div class="rpt">&#x1F4C6; PLANNING &mdash; RANGES</div></div><div style="text-align:right;"><div class="badge">${lbl}</div><div style="color:rgba(255,255,255,0.5);font-size:9px;margin-top:5px;">${ranges.length} ranges</div></div></div><table><thead><tr><th>ACTIVITY</th><th style="text-align:center;">FROM &rarr; TO</th><th style="text-align:center;">TOWERS</th><th style="text-align:center;">PLANNED</th></tr></thead><tbody>${rws}</tbody></table><div class="footer">L&amp;T Construction · ${new Date().toLocaleString("en-GB")}</div></div></body></html>`;
+      return {html,units:ranges,lbl};
+    }
+    const units=getScopeUnits(scope);
     if(!units.length) return null;
     const thCells=units.map(u=>`
       <th style="padding:8px 6px;background:#1a3a5c;color:#fff;font-size:11px;font-weight:700;
@@ -2661,8 +2678,21 @@ function PlanningTab({config,cum,daily,cfgKey,project,mainActivity}){
     const XLSX=window.XLSX;
     const cs=config.segments.find(s=>s.id===seg);
     const sas=config.subActivities;
-    const units=getScopeUnits(scope);
     const lbl=getScopeLabel(scope);
+    if(planView==="range"){
+      const ranges=buildRangesScope(scope);
+      if(!ranges.length){flash("No planned ranges for this scope");return;}
+      const rows=[[`${project.name} · ${mainActivity.name} · ${cs?.name} · ${lbl} (Range)`],[],["ACTIVITY","FROM","TO","TOWERS","PLANNED"],...ranges.map(r=>[r.saName,r.from,r.to,r.count,r.text])];
+      const ws=XLSX.utils.aoa_to_sheet(rows);
+      ws["!cols"]=[{wch:26},{wch:10},{wch:10},{wch:8},{wch:12}];
+      const wb=XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb,ws,cs?.name||"Plan");
+      const out=XLSX.write(wb,{bookType:"xlsx",type:"array"});
+      const url=URL.createObjectURL(new Blob([out],{type:"application/octet-stream"}));
+      Object.assign(document.createElement("a"),{href:url,download:`Planning-Range-${lbl.replace(/[^a-zA-Z0-9+\-]/g,"_")}.xlsx`}).click();
+      URL.revokeObjectURL(url); flash("\u{1F4E5} Excel downloaded!"); setDlPanel(false); return;
+    }
+    const units=getScopeUnits(scope);
     if(!units.length){flash("No towers found for this scope");return;}
     const rows=[[`MEW-5991 · Erection · ${cs?.name} · ${lbl}`],[],["ACTIVITY",...units.map(u=>u.loc)],["TYPE",...units.map(u=>u.type||"\u2013")],...sas.map(sa=>[sa.name,...units.map(u=>{ if(isDone(seg,u.loc,sa.key)) return "\u2713 Done"; const p=getPlan(seg,u.loc,sa.key); if(!p||!planMatchesScope(p,scope)) return ""; return p.type==="day"?fmtD(p.value):p.value; })])];
     const ws=XLSX.utils.aoa_to_sheet(rows);
@@ -2678,8 +2708,19 @@ function PlanningTab({config,cum,daily,cfgKey,project,mainActivity}){
   function runCopy(scope){
     const cs=config.segments.find(s=>s.id===seg);
     const sas=config.subActivities;
-    const units=getScopeUnits(scope);
     const lbl=getScopeLabel(scope);
+    if(planView==="range"){
+      const ranges=buildRangesScope(scope);
+      const rl=[`PLANNING (Range) - ${project.name} · ${mainActivity.name} · ${cs?.name} · ${lbl}`,"-".repeat(50),""];
+      let lastAct=null;
+      ranges.forEach(r=>{ if(r.saName!==lastAct){rl.push(`${r.saName}:`);lastAct=r.saName;} const rng=r.from!==r.to?`${r.from} -> ${r.to}`:r.from; rl.push(`  ${rng}  (${r.count})  ->  ${r.text}`); });
+      if(!ranges.length) rl.push("(no planned ranges)");
+      const rtxt=rl.join("\n");
+      if(navigator.clipboard&&window.isSecureContext){ navigator.clipboard.writeText(rtxt).then(()=>flash("Copied!")).catch(()=>{setCpText(rtxt);setCpModal(true);}); }
+      else { setCpText(rtxt); setCpModal(true); }
+      setDlPanel(false); return;
+    }
+    const units=getScopeUnits(scope);
     const lines=[`PLANNING \u2014 ${project.name} · ${mainActivity.name} · ${cs?.name} · ${lbl}`,"\u2500".repeat(50),""];
     sas.forEach(sa=>{
       const entries=units.filter(u=>{ const p=getPlan(seg,u.loc,sa.key); return p&&planMatchesScope(p,scope); });
