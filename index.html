@@ -11,7 +11,7 @@
        BUILD must equal the "v" value in version.json. Bump BOTH on every deploy. -->
   <script>
   (function(){
-    var BUILD="2026-06-13.15";
+    var BUILD="2026-06-13.16";
     try{
       fetch("version.json?ts="+Date.now(),{cache:"no-store"})
         .then(function(r){return r.ok?r.json():null;})
@@ -1094,6 +1094,8 @@ function ScheduleTab({config, cum, daily, cfgKey, project, mainActivity, date, w
   const [histDone, setHistDone]   = useState({});
   const [hideDone, setHideDone]   = useState(false);  // hide completed activity rows across the schedule
   const [schedView, setSchedView] = useState(()=>lsGet("schedView")||"grid"); // "grid" | "range"
+  const [addRangeFor, setAddRangeFor] = useState(null); // saKey whose add-range form is open
+  const [rangeForm, setRangeForm]     = useState({from:"",to:"",start:"",end:""});
 
   const schedKey = "schedule_" + cfgKey;
 
@@ -1165,6 +1167,43 @@ function ScheduleTab({config, cum, daily, cfgKey, project, mainActivity, date, w
     }
     const next={...schedules,[seg]:schedules[seg].map(s=>s.id===active.id?{...s,plan:newPlan}:s)};
     await saveAll(next);
+  }
+
+  // Existing plan ranges for one activity (within the schedule's tower range).
+  function rangesForActivity(saKey){
+    const out=[]; let run=null;
+    const flush=()=>{ if(run){out.push({from:run.from,to:run.to,count:run.count,s:run.s,e:run.e,locs:run.locs});run=null;} };
+    towers.forEach(loc=>{
+      const raw=active?.plan?.[loc]?.[saKey];
+      const sp=raw?(typeof raw==="string"?{s:raw,e:raw}:raw):null;
+      if(sp&&sp.s){ const e=sp.e||sp.s, key=`${sp.s}|${e}`;
+        if(run&&run.key===key){run.to=loc;run.count++;run.locs.push(loc);} else {flush();run={from:loc,to:loc,count:1,key,s:sp.s,e,locs:[loc]};} }
+      else flush();
+    });
+    flush();
+    return out;
+  }
+  // Apply a planned date span to a tower range for an activity (from the range table).
+  async function applyRangePlan(saKey){
+    const {from,to,start,end}=rangeForm;
+    if(!from||!to){flash("❌ Pick from & to towers");return;}
+    if(!start){flash("❌ Pick a start date");return;}
+    const sub=towersBetween(seg, from, to);
+    if(!sub.length){flash("❌ Invalid tower range");return;}
+    const e=end||start;
+    const newPlan=JSON.parse(JSON.stringify(active.plan||{}));
+    sub.forEach(loc=>{ newPlan[loc]=newPlan[loc]||{}; newPlan[loc][saKey]={s:start,e}; });
+    const next={...schedules,[seg]:schedules[seg].map(s=>s.id===active.id?{...s,plan:newPlan}:s)};
+    await saveAll(next);
+    setAddRangeFor(null); setRangeForm({from:"",to:"",start:"",end:""});
+    flash("✅ Range planned");
+  }
+  async function clearRangePlan(saKey, locs){
+    const newPlan=JSON.parse(JSON.stringify(active.plan||{}));
+    locs.forEach(loc=>{ if(newPlan[loc]) delete newPlan[loc][saKey]; });
+    const next={...schedules,[seg]:schedules[seg].map(s=>s.id===active.id?{...s,plan:newPlan}:s)};
+    await saveAll(next);
+    flash("✅ Cleared");
   }
 
   async function saveAll(next) {
@@ -1863,47 +1902,92 @@ function ScheduleTab({config, cum, daily, cfgKey, project, mainActivity, date, w
           )}
 
           {/* ── Range table: contiguous tower ranges per activity ── */}
-          {schedView==="range"&&towers.length>0&&(()=>{
-            const ranges=buildSchedRanges();
-            if(!ranges.length) return (
-              <div style={{textAlign:"center",padding:30,color:C.muted,fontSize:13,
-                background:C.card,borderRadius:12,border:`1px solid ${C.border}`}}>
-                📅 No plans set yet — switch to Grid view, tap cells to plan a span, then come back.
-              </div>
-            );
-            return (
-              <div style={{overflowX:"auto",WebkitOverflowScrolling:"touch",borderRadius:12,border:`1px solid ${C.border}`}}>
-                <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
-                  <thead><tr style={{background:C.navy}}>
-                    <th style={{padding:"9px 12px",color:"#fff",fontWeight:700,fontSize:11,textAlign:"left",minWidth:150}}>ACTIVITY</th>
-                    <th style={{padding:"9px 12px",color:"#fff",fontWeight:700,fontSize:11,textAlign:"center",whiteSpace:"nowrap"}}>FROM → TO</th>
-                    <th style={{padding:"9px 8px",color:"rgba(255,255,255,0.8)",fontWeight:700,fontSize:11,textAlign:"center"}}>TOWERS</th>
-                    <th style={{padding:"9px 12px",color:"#fff",fontWeight:700,fontSize:11,textAlign:"center"}}>PLANNED</th>
-                  </tr></thead>
-                  <tbody>
-                    {ranges.map((r,i)=>{
+          {schedView==="range"&&towers.length>0&&(
+            <div>
+              {config.subActivities.map((sa,ai)=>{
+                const rgs=rangesForActivity(sa.key);
+                const adding=addRangeFor===sa.key;
+                return (
+                  <div key={sa.key} style={{marginBottom:10,border:`1px solid ${C.border}`,borderRadius:10,overflow:"hidden"}}>
+                    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,
+                      padding:"8px 12px",background:"#f0f4fa",borderBottom:rgs.length||adding?`1px solid ${C.border}`:"none"}}>
+                      <span style={{fontSize:12,fontWeight:700,color:C.text}}>{ai+1}. {sa.name}</span>
+                      <button onClick={()=>{ setAddRangeFor(adding?null:sa.key); setRangeForm({from:active.from,to:active.to,start:"",end:""}); }}
+                        style={{padding:"5px 11px",borderRadius:18,border:`1.5px ${adding?"solid":"dashed"} ${C.amber}`,
+                          background:adding?"#fff8ec":"none",color:C.amber,cursor:"pointer",fontSize:11,fontWeight:700,whiteSpace:"nowrap"}}>
+                        {adding?"✕ Close":"+ Add range"}
+                      </button>
+                    </div>
+
+                    {/* Add-range form */}
+                    {adding&&(
+                      <div style={{padding:"10px 12px",background:"#fffdf7",borderBottom:rgs.length?`1px solid ${C.border}`:"none"}}>
+                        <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:8}}>
+                          <div style={{flex:1,minWidth:90}}>
+                            <div style={{fontSize:10,color:C.muted,fontWeight:600,marginBottom:3}}>FROM</div>
+                            <select value={rangeForm.from} onChange={e=>setRangeForm(f=>({...f,from:e.target.value}))}
+                              style={{width:"100%",padding:"7px 8px",borderRadius:6,border:`1px solid ${C.border}`,fontSize:12,background:C.card}}>
+                              <option value="">—</option>
+                              {towers.map(t=><option key={t} value={t}>{t}</option>)}
+                            </select>
+                          </div>
+                          <div style={{flex:1,minWidth:90}}>
+                            <div style={{fontSize:10,color:C.muted,fontWeight:600,marginBottom:3}}>TO</div>
+                            <select value={rangeForm.to} onChange={e=>setRangeForm(f=>({...f,to:e.target.value}))}
+                              style={{width:"100%",padding:"7px 8px",borderRadius:6,border:`1px solid ${C.border}`,fontSize:12,background:C.card}}>
+                              <option value="">—</option>
+                              {towers.map(t=><option key={t} value={t}>{t}</option>)}
+                            </select>
+                          </div>
+                        </div>
+                        <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:10}}>
+                          <div style={{flex:1,minWidth:120}}>
+                            <div style={{fontSize:10,color:C.muted,fontWeight:600,marginBottom:3}}>PLAN START</div>
+                            <input type="date" value={rangeForm.start} onChange={e=>setRangeForm(f=>({...f,start:e.target.value}))}
+                              style={{width:"100%",padding:"7px 8px",borderRadius:6,border:`1px solid ${C.border}`,fontSize:12,boxSizing:"border-box"}}/>
+                          </div>
+                          <div style={{flex:1,minWidth:120}}>
+                            <div style={{fontSize:10,color:C.muted,fontWeight:600,marginBottom:3}}>PLAN END</div>
+                            <input type="date" value={rangeForm.end} onChange={e=>setRangeForm(f=>({...f,end:e.target.value}))}
+                              style={{width:"100%",padding:"7px 8px",borderRadius:6,border:`1px solid ${C.border}`,fontSize:12,boxSizing:"border-box"}}/>
+                          </div>
+                        </div>
+                        <button onClick={()=>applyRangePlan(sa.key)}
+                          style={{width:"100%",padding:"9px",borderRadius:8,border:"none",background:C.amber,color:"#fff",fontWeight:700,fontSize:13,cursor:"pointer"}}>
+                          ✓ Plan this range
+                        </button>
+                      </div>
+                    )}
+
+                    {/* Existing ranges */}
+                    {rgs.map((r,i)=>{
                       const overdue=r.e<todayStr();
                       return (
-                        <tr key={i} style={{background:i%2===0?"#ffffff":"#f8f9fc"}}>
-                          <td style={{padding:"8px 12px",fontWeight:600,color:C.text,borderBottom:`1px solid ${C.border}`,whiteSpace:"nowrap"}}>{r.saName}</td>
-                          <td style={{padding:"8px 12px",fontFamily:MONO,fontWeight:700,color:C.navy,textAlign:"center",borderBottom:`1px solid ${C.border}`,whiteSpace:"nowrap"}}>
+                        <div key={i} style={{display:"flex",alignItems:"center",gap:8,padding:"8px 12px",
+                          borderBottom:i<rgs.length-1?`1px solid ${C.border}`:"none",background:i%2===0?"#fff":"#f8f9fc"}}>
+                          <span style={{fontFamily:MONO,fontWeight:700,color:C.navy,fontSize:12,minWidth:90}}>
                             {r.from}{r.from!==r.to?` → ${r.to}`:""}
-                          </td>
-                          <td style={{padding:"8px 8px",textAlign:"center",color:C.muted,borderBottom:`1px solid ${C.border}`}}>{r.count}</td>
-                          <td style={{padding:"8px 12px",textAlign:"center",borderBottom:`1px solid ${C.border}`}}>
-                            <span style={{background:overdue?"#fff0f0":"#eef3ff",border:`1.5px solid ${overdue?"#ffaaaa":"#6b8fd6"}`,
-                              borderRadius:6,padding:"3px 9px",color:overdue?"#cc2222":"#2a5a9a",fontWeight:700,fontSize:11,whiteSpace:"nowrap"}}>
-                              {r.s===r.e?fmtMD(r.s):`${fmtMD(r.s)} → ${fmtMD(r.e)}`}
-                            </span>
-                          </td>
-                        </tr>
+                          </span>
+                          <span style={{fontSize:11,color:C.muted,minWidth:36}}>×{r.count}</span>
+                          <span style={{flex:1}}/>
+                          <span style={{background:overdue?"#fff0f0":"#eef3ff",border:`1.5px solid ${overdue?"#ffaaaa":"#6b8fd6"}`,
+                            borderRadius:6,padding:"3px 9px",color:overdue?"#cc2222":"#2a5a9a",fontWeight:700,fontSize:11,whiteSpace:"nowrap"}}>
+                            {r.s===r.e?fmtMD(r.s):`${fmtMD(r.s)} → ${fmtMD(r.e)}`}
+                          </span>
+                          <button onClick={()=>clearRangePlan(sa.key,r.locs)}
+                            style={{background:"#fff0f0",color:"#cc2222",border:"1px solid #ffaaaa",borderRadius:5,
+                              padding:"3px 8px",cursor:"pointer",fontSize:11,fontWeight:700}}>✕</button>
+                        </div>
                       );
                     })}
-                  </tbody>
-                </table>
-              </div>
-            );
-          })()}
+                    {!rgs.length&&!adding&&(
+                      <div style={{padding:"8px 12px",fontSize:11,color:C.muted,fontStyle:"italic"}}>No plan yet</div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
 
           {active&&towers.length===0&&(
             <div style={{textAlign:"center",padding:30,color:"#cc2222",fontSize:13,
