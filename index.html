@@ -11,7 +11,7 @@
        BUILD must equal the "v" value in version.json. Bump BOTH on every deploy. -->
   <script>
   (function(){
-    var BUILD="2026-06-13.6";
+    var BUILD="2026-06-13.7";
     try{
       fetch("version.json?ts="+Date.now(),{cache:"no-store"})
         .then(function(r){return r.ok?r.json():null;})
@@ -3188,10 +3188,20 @@ function DPRScreen({project,mainActivity,onBack,fbStatus,setFbStatus}) {
   const [remModal,setRemModal]   = useState(null); // {saName, towers:[{loc,type}]}
   const [prevPlan,setPrevPlan]   = useState(null);
   const [todoData,setTodoData]   = useState({});
+  const [chipMode,setChipMode]   = useState(()=>lsGet("chipMode")||"type"); // "type" | "plandate"
+  const [schedPlan,setSchedPlan] = useState({}); // {segId:{loc:maxPlannedEndDate}}
   const refs = useRef({});
 
   const cfgKey   = `${project.id}_${mainActivity.id}`;
   const dailyKey = `${cfgKey}_${date}`;
+
+  // "Jun 18" — short planned-completion date for a chip (no year).
+  const fmtChip = dt => { if(!dt) return ""; const c=schedColLabel(dt); return `${c.mon} ${c.day}`; };
+  // Secondary text shown under a tower chip, per the chip-display mode.
+  const chipSub = loc => {
+    if (chipMode==="plandate") return fmtChip(schedPlan[seg]?.[loc]);
+    return config.segments.find(s=>s.id===seg)?.units.find(u=>u.loc===loc)?.type;
+  };
 
   // ── load config ──
   useEffect(()=>{
@@ -3248,6 +3258,34 @@ function DPRScreen({project,mainActivity,onBack,fbStatus,setFbStatus}) {
     }
     load();
   },[config,date]);
+
+  // ── load schedule plans → per-tower planned completion date (latest planned end) ──
+  useEffect(()=>{
+    if (!config) return;
+    if (mainTab!=="dpr"&&mainTab!=="plan") return;
+    let cancelled=false;
+    (async()=>{
+      let data=await fbGet("dpr_schedule","schedule_"+cfgKey);
+      if (!data) data=lsGet("schedule_"+cfgKey)||{};
+      const map={};
+      config.segments.forEach(s=>{
+        map[s.id]={};
+        (data[s.id]||[]).forEach(sch=>{
+          const plan=sch.plan||{};
+          Object.keys(plan).forEach(loc=>{
+            Object.keys(plan[loc]||{}).forEach(saKey=>{
+              const raw=plan[loc][saKey];
+              const sp=raw?(typeof raw==="string"?{s:raw,e:raw}:raw):null;
+              const end=sp&&(sp.e||sp.s);
+              if (end && (!map[s.id][loc] || end>map[s.id][loc])) map[s.id][loc]=end;
+            });
+          });
+        });
+      });
+      if (!cancelled) setSchedPlan(map);
+    })();
+    return ()=>{ cancelled=true; };
+  },[config, cfgKey, mainTab]);
 
   function buildCum(cfg, stored) {
     const c={};
@@ -3757,6 +3795,23 @@ function DPRScreen({project,mainActivity,onBack,fbStatus,setFbStatus}) {
         </div>
       )}
 
+      {/* Chip display mode toggle (DPR + Plan) */}
+      {(mainTab==="dpr"||mainTab==="plan")&&(
+        <div style={{display:"flex",alignItems:"center",gap:8,padding:"8px 14px",
+          background:"#f8f9fc",borderBottom:`1px solid ${C.border}`,flexWrap:"wrap"}}>
+          <span style={{fontSize:11,color:C.muted,fontWeight:600}}>Chips show:</span>
+          {[["type","No. + Type"],["plandate","No. + Plan date"]].map(([v,lbl])=>(
+            <button key={v} onClick={()=>{setChipMode(v);lsSet("chipMode",v);}}
+              style={{padding:"5px 11px",borderRadius:20,
+                border:`1.5px solid ${chipMode===v?C.amber:C.border}`,
+                background:chipMode===v?"#fff8ec":C.card,color:chipMode===v?C.amber:C.muted,
+                cursor:"pointer",fontSize:11,fontWeight:chipMode===v?700:500,whiteSpace:"nowrap"}}>
+              {lbl}
+            </button>
+          ))}
+        </div>
+      )}
+
       {/* ── DPR Tab ── */}
       {mainTab==="dpr"&&seg&&config.subActivities.map((sa,ai)=>{
         const total=getUnits(seg).length;
@@ -3820,7 +3875,7 @@ function DPRScreen({project,mainActivity,onBack,fbStatus,setFbStatus}) {
                     <div style={{fontSize:10,color:"#1a5ab0",fontWeight:700,letterSpacing:1,marginBottom:5}}>📅 FROM YESTERDAY'S PLAN:</div>
                     <div style={{display:"flex",flexWrap:"wrap",gap:5}}>
                       {yp.map(loc=>{
-                        const tt=config.segments.find(s=>s.id===seg)?.units.find(u=>u.loc===loc)?.type;
+                        const tt=chipSub(loc);
                         return (
                           <div key={loc} style={{display:"inline-flex",gap:3}}>
                             <button onClick={()=>addChips(seg,sa.key,IP,"dpr",loc)}
@@ -3904,7 +3959,7 @@ function DPRScreen({project,mainActivity,onBack,fbStatus,setFbStatus}) {
                     <Chip key={loc} loc={loc} status={chipStatus(seg,sa.key,loc)}
                       onToggle={()=>toggle(seg,sa.key,loc)}
                       onRemove={()=>remove(seg,sa.key,loc)}
-                      towerType={config.segments.find(s=>s.id===seg)?.units.find(u=>u.loc===loc)?.type}/>
+                      towerType={chipSub(loc)}/>
                   ))}
                 </div>
               )}
@@ -3932,7 +3987,7 @@ function DPRScreen({project,mainActivity,onBack,fbStatus,setFbStatus}) {
                     <div style={{fontSize:10,color:"#b06000",fontWeight:700,letterSpacing:1,marginBottom:5}}>▶ IN PROGRESS — TAP TO ADD:</div>
                     <div style={{display:"flex",flexWrap:"wrap",gap:5}}>
                       {todIp.map(loc=>{
-                        const ttype=config.segments.find(s=>s.id===seg)?.units.find(u=>u.loc===loc)?.type;
+                        const ttype=chipSub(loc);
                         return (
                           <button key={loc} onClick={()=>addChips(seg,sa.key,PLAN,"plan",loc)}
                             style={{background:"#fff8ec",color:"#b06000",border:"1.5px solid #e09030",borderRadius:6,padding:"5px 10px",cursor:"pointer",fontFamily:MONO,fontSize:11,fontWeight:700,display:"flex",flexDirection:"column",alignItems:"center",gap:1}}>
@@ -3959,7 +4014,7 @@ function DPRScreen({project,mainActivity,onBack,fbStatus,setFbStatus}) {
               {pc.length>0&&(
                 <div style={{display:"flex",flexWrap:"wrap",marginTop:2}}>
                   {pc.map(loc=>{
-                    const ttype=config.segments.find(s=>s.id===seg)?.units.find(u=>u.loc===loc)?.type;
+                    const ttype=chipSub(loc);
                     return (
                       <div key={loc} style={{position:"relative",display:"inline-flex",margin:"3px"}}>
                         <span style={{background:"#eaf2ff",color:"#1a5ab0",border:"1.5px solid #6090d0",borderRadius:7,padding:"5px 10px",fontFamily:MONO,fontSize:12,fontWeight:700,display:"flex",flexDirection:"column",alignItems:"center",gap:1}}>
