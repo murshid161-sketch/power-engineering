@@ -11,7 +11,7 @@
        BUILD must equal the "v" value in version.json. Bump BOTH on every deploy. -->
   <script>
   (function(){
-    var BUILD="2026-06-13.5";
+    var BUILD="2026-06-13.6";
     try{
       fetch("version.json?ts="+Date.now(),{cache:"no-store"})
         .then(function(r){return r.ok?r.json():null;})
@@ -1223,85 +1223,166 @@ function ScheduleTab({config, cum, daily, cfgKey, project, mainActivity, date, w
     flash("✅ Deleted");
   }
 
-  function downloadSchedulePNG(active, towers) {
-    if (!active||!towers.length||!window.html2canvas){flash("Nothing to export");return;}
+  // Build the new-style schedule HTML (per-location blocks, dates × activities).
+  function buildScheduleHTML(active, towers, dateCols) {
     const sas=config.subActivities;
     const currSeg=config.segments.find(s=>s.id===seg);
     const pct=overallPct(seg,towers);
-    const ssStyle=st=>({done:{bg:"#eafaf0",fg:"#1a7a35",icon:"✓"},ip:{bg:"#fff8ec",fg:"#b06000",icon:"▶"},pending:{bg:"#f0f2f8",fg:"#9098b0",icon:"○"}}[st]||{bg:"#f0f2f8",fg:"#9098b0",icon:"○"});
-    const tableRows=towers.map((loc,ri)=>{
+    const colW=30;
+    const dateHdr=dateCols.map(dt=>{
+      const c=schedColLabel(dt); const isT=dt===todayStr();
+      return `<th style="min-width:${colW}px;width:${colW}px;padding:4px 1px;text-align:center;line-height:1.15;color:${isT?"#ffd479":"rgba(255,255,255,0.9)"};background:${isT?"#13314f":"#1a3a5c"};border-left:1px solid rgba(255,255,255,0.08);">
+        <div style="font-weight:700;font-size:9px;">${c.day}</div><div style="opacity:.7;font-size:8px;">${c.mon}</div></th>`;
+    }).join("");
+    const blocks=towers.map(loc=>{
       const unit=currSeg?.units.find(u=>u.loc===loc);
       const st=towerStatus(seg,loc);
       const doneC=Object.values(st).filter(v=>v==="done").length;
       const tPct=sas.length?Math.round(doneC/sas.length*100):0;
-      const bg=ri%2===0?"#ffffff":"#f8f9fc";
-      const cells=sas.map(sa=>{
-        const s=ssStyle(st[sa.key]||"pending");
-        return `<td style="padding:8px 10px;text-align:center;border-bottom:1px solid #e0e4ee;background:${bg};">
-          <span style="background:${s.bg};color:${s.fg};border-radius:5px;padding:3px 8px;font-weight:700;font-size:12px;">${s.icon}</span></td>`;
+      const rows=sas.map((sa,ai)=>{
+        const rowBg=ai%2===0?"#ffffff":"#f8f9fc";
+        const status=st[sa.key]||"pending";
+        const todayDone=(daily?.[seg]?.[sa.key]?.done||[]).includes(loc);
+        const doneDate=histDone?.[seg]?.[sa.key]?.[loc]||(todayDone?todayStr():null);
+        const raw=active.plan?.[loc]?.[sa.key];
+        const sp=raw?(typeof raw==="string"?{s:raw,e:raw}:raw):null;
+        const icon=status==="done"?"✓":status==="ip"?"▶":"○";
+        const iconC=status==="done"?"#1a7a35":status==="ip"?"#b06000":"#9098b0";
+        const cells=dateCols.map((dt,di)=>{
+          const isFirst=di===0;
+          const completed=status==="done"&&(doneDate?doneDate===dt:isFirst);
+          const inPlan=sp&&sp.s&&(sp.e?(dt>=sp.s&&dt<=sp.e):dt===sp.s);
+          const overdue=inPlan&&status!=="done"&&dt<todayStr();
+          let inner="";
+          if (completed) inner=`<span style="display:inline-block;width:18px;height:18px;line-height:15px;border-radius:4px;background:#eafaf0;color:#1a7a35;border:1.5px solid #3fb950;font-weight:700;font-size:10px;">✓</span>`;
+          else if (inPlan){
+            const bg=overdue?"#fff0f0":"#eef3ff",fg=overdue?"#cc2222":"#2a5a9a",bd=overdue?"#ffaaaa":"#6b8fd6",sty=overdue?"solid":"dashed";
+            inner=`<span style="display:inline-block;width:18px;height:18px;line-height:15px;border-radius:4px;background:${bg};color:${fg};border:1.5px ${sty} ${bd};font-weight:700;font-size:10px;">P</span>`;
+          }
+          return `<td style="padding:2px 0;text-align:center;border-left:1px solid #eef0f7;border-bottom:1px solid #e0e4ee;background:${rowBg};">${inner}</td>`;
+        }).join("");
+        const nm=sa.name.length>22?sa.name.slice(0,21)+"…":sa.name;
+        return `<tr>
+          <td style="padding:5px 8px;font-size:10px;font-weight:600;color:#1a1a2e;background:${rowBg};white-space:nowrap;border-right:1px solid #e0e4ee;border-bottom:1px solid #e0e4ee;">
+            <span style="color:${iconC};margin-right:4px;">${icon}</span>${ai+1}. ${nm}</td>${cells}
+        </tr>`;
       }).join("");
-      return `<tr>
-        <td style="padding:8px 12px;font-family:'Courier New',monospace;font-weight:700;color:#1a1a2e;border-bottom:1px solid #e0e4ee;background:${bg};">${loc}</td>
-        <td style="padding:8px 12px;font-family:'Courier New',monospace;font-size:11px;color:#9098b0;border-bottom:1px solid #e0e4ee;background:${bg};">${unit?.type||"–"}</td>
-        ${cells}
-        <td style="padding:8px 10px;text-align:center;border-bottom:1px solid #e0e4ee;background:${bg};font-weight:700;font-size:12px;color:${tPct===100?"#1a7a35":tPct>0?"#e07b00":"#9098b0"};">${tPct}%</td>
-      </tr>`;
+      return `<div style="margin:0 0 14px;border:1px solid #e0e4ee;border-radius:8px;overflow:hidden;">
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:7px 12px;background:#f0f4fa;border-bottom:1px solid #e0e4ee;">
+          <div><span style="font-family:'Courier New',monospace;font-weight:800;font-size:13px;color:#1a1a2e;">${loc}</span>
+          <span style="font-family:'Courier New',monospace;font-size:9px;color:#9098b0;margin-left:8px;">${unit?.type||"–"}</span></div>
+          <span style="font-size:10px;font-weight:700;color:${tPct===100?"#1a7a35":tPct>0?"#e07b00":"#9098b0"};">${doneC}/${sas.length} · ${tPct}%</span>
+        </div>
+        <table style="border-collapse:collapse;width:100%;">
+          <thead><tr style="background:#1a3a5c;">
+            <th style="padding:5px 8px;text-align:left;color:#fff;font-size:10px;font-weight:700;min-width:150px;border-right:2px solid rgba(255,255,255,0.2);">ACTIVITY</th>${dateHdr}
+          </tr></thead><tbody>${rows}</tbody>
+        </table></div>`;
     }).join("");
-    const thCells=sas.map(sa=>`<th style="padding:10px 8px;background:#1a3a5c;color:rgba(255,255,255,0.9);font-size:10px;font-weight:700;text-align:center;white-space:nowrap;">${sa.name}</th>`).join("");
+    const totalW=150+dateCols.length*colW+48;
     const html=`<!DOCTYPE html><html><head><meta charset="UTF-8"/>
-<style>*{box-sizing:border-box;margin:0;padding:0;}body{font-family:'Segoe UI',system-ui,sans-serif;background:#dde2ee;padding:24px;}
-.page{background:#fff;max-width:1060px;margin:0 auto;border-radius:8px;overflow:hidden;box-shadow:0 6px 32px rgba(0,0,0,0.2);}
-.hdr{background:linear-gradient(135deg,#1a3a5c,#2a5a9a);padding:20px 28px;display:flex;justify-content:space-between;align-items:flex-start;}
-.brand{color:#fff;font-size:26px;font-weight:900;letter-spacing:1px;}.brand em{color:#e07b00;font-style:normal;}
+<style>*{box-sizing:border-box;margin:0;padding:0;}body{font-family:'Segoe UI',system-ui,sans-serif;background:#dde2ee;padding:20px;}
+.page{background:#fff;width:${totalW}px;margin:0 auto;border-radius:8px;overflow:hidden;box-shadow:0 6px 32px rgba(0,0,0,0.2);}
+.hdr{background:linear-gradient(135deg,#1a3a5c,#2a5a9a);padding:18px 24px;display:flex;justify-content:space-between;align-items:flex-start;}
+.brand{color:#fff;font-size:24px;font-weight:900;letter-spacing:1px;}.brand em{color:#e07b00;font-style:normal;}
 .meta{color:rgba(255,255,255,0.75);font-size:11px;margin-top:5px;}
-.rhs{text-align:right;}.rpt{color:#fff;font-size:20px;font-weight:900;letter-spacing:2px;}
+.rhs{text-align:right;}.rpt{color:#fff;font-size:18px;font-weight:900;letter-spacing:2px;}
 .sub{color:rgba(255,255,255,0.55);font-size:10px;margin-top:4px;}
-.info{padding:14px 28px;background:#f0f4fa;border-bottom:2px solid #1a3a5c;display:flex;gap:28px;flex-wrap:wrap;align-items:center;}
+.info{padding:12px 24px;background:#f0f4fa;border-bottom:2px solid #1a3a5c;display:flex;gap:20px;flex-wrap:wrap;align-items:center;}
 .tag{font-size:12px;color:#1a1a2e;}.tag b{color:#1a3a5c;}
-.pbar-wrap{flex:1;min-width:140px;display:flex;align-items:center;gap:10;}
-.pbar{flex:1;height:8px;background:#dde2ee;border-radius:4px;overflow:hidden;}
-.pbar-fill{height:100%;border-radius:4px;}
-table{width:100%;border-collapse:collapse;}
-th{padding:10px 12px;color:#fff;font-size:11px;font-weight:700;text-align:left;white-space:nowrap;}
-.footer{padding:12px 28px;text-align:center;font-size:10px;color:#8090b0;border-top:2px solid #1a3a5c;}
+.legend{display:flex;gap:16px;align-items:center;padding:9px 24px;font-size:11px;color:#5a6680;border-bottom:1px solid #e0e4ee;flex-wrap:wrap;}
+.bx{display:inline-block;width:16px;height:16px;border-radius:4px;line-height:13px;text-align:center;font-size:9px;font-weight:700;margin-right:4px;vertical-align:middle;}
+.body{padding:16px 24px;}
+.footer{padding:12px 24px;text-align:center;font-size:10px;color:#8090b0;border-top:2px solid #1a3a5c;}
 </style></head><body><div class="page">
 <div class="hdr">
   <div><div class="brand">L<em>&amp;</em>T CONSTRUCTION</div>
   <div class="meta">${date} &nbsp;·&nbsp; ${weather} &nbsp;·&nbsp; ${temp} &nbsp;·&nbsp; ${project.name}</div></div>
-  <div class="rhs"><div class="rpt">SCHEDULE REPORT</div>
-  <div class="sub">${mainActivity.name} &nbsp;·&nbsp; ${currSeg?.name}</div></div>
+  <div class="rhs"><div class="rpt">SCHEDULE</div><div class="sub">${mainActivity.name} &nbsp;·&nbsp; ${currSeg?.name}</div></div>
 </div>
 <div class="info">
   <div class="tag">📋 <b>${active.label}</b></div>
-  <div class="tag">📍 <b style="font-family:'Courier New',monospace">${active.from}</b> → <b style="font-family:'Courier New',monospace">${active.to}</b> (${towers.length} towers)</div>
-  ${active.targetDate?`<div class="tag">🎯 Target: <b>${active.targetDate}</b></div>`:""}
-  <div class="pbar-wrap">
-    <div class="pbar"><div class="pbar-fill" style="width:${pct}%;background:${pct>=90?"#1a7a35":pct>=50?"#e07b00":"#1a3a5c"};"></div></div>
-    <b style="font-size:13px;color:${pct>=90?"#1a7a35":pct>=50?"#e07b00":"#9098b0"};">${pct}%</b>
-  </div>
+  <div class="tag">📍 <b style="font-family:'Courier New',monospace">${active.from}</b> → <b style="font-family:'Courier New',monospace">${active.to}</b> (${towers.length} loc)</div>
+  <div class="tag">🗓 <b>${dateCols[0]}</b> → <b>${dateCols[dateCols.length-1]}</b> (${dateCols.length}d)</div>
+  ${active.targetDate?`<div class="tag">🎯 <b>${active.targetDate}</b></div>`:""}
+  <div class="tag">✅ <b style="color:${pct>=90?"#1a7a35":pct>=50?"#e07b00":"#1a3a5c"}">${pct}%</b></div>
 </div>
-<table><thead><tr>
-  <th style="background:#22395a;width:80px;">TOWER</th>
-  <th style="background:#22395a;width:70px;">TYPE</th>
-  ${thCells}
-  <th style="background:#22395a;text-align:center;width:60px;">OVERALL</th>
-</tr></thead><tbody>${tableRows}</tbody></table>
-<div class="footer">Generated: ${date} &nbsp;·&nbsp; ${project.name} &nbsp;·&nbsp; ${mainActivity.name} &nbsp;·&nbsp; ${active.label} &nbsp;·&nbsp; L&amp;T Construction</div>
+<div class="legend">
+  <span><span class="bx" style="background:#eafaf0;color:#1a7a35;border:1.5px solid #3fb950;">✓</span>Completed</span>
+  <span><span class="bx" style="background:#eef3ff;color:#2a5a9a;border:1.5px dashed #6b8fd6;">P</span>Planned</span>
+  <span><span class="bx" style="background:#fff0f0;color:#cc2222;border:1.5px solid #ffaaaa;">P</span>Overdue</span>
+</div>
+<div class="body">${blocks}</div>
+<div class="footer">Generated ${date} &nbsp;·&nbsp; ${project.name} &nbsp;·&nbsp; ${mainActivity.name} &nbsp;·&nbsp; ${active.label}</div>
 </div></body></html>`;
+    return {html, width:totalW};
+  }
+
+  function downloadSchedulePNG(active, towers, dateCols) {
+    if (!active||!towers.length||!dateCols.length||!window.html2canvas){flash("Nothing to export");return;}
+    const built=buildScheduleHTML(active, towers, dateCols);
+    const w=Math.max(900, built.width+40);
     const iframe=document.createElement("iframe");
-    iframe.style.cssText="position:fixed;left:-9999px;top:-9999px;width:1140px;height:1px;border:none;";
+    iframe.style.cssText=`position:fixed;left:-9999px;top:-9999px;width:${w}px;height:1px;border:none;`;
     document.body.appendChild(iframe);
-    iframe.contentDocument.open(); iframe.contentDocument.write(html); iframe.contentDocument.close();
+    iframe.contentDocument.open(); iframe.contentDocument.write(built.html); iframe.contentDocument.close();
+    flash("⏳ Rendering image…");
     setTimeout(()=>{
       const pg=iframe.contentDocument.querySelector(".page");
       if (!pg){document.body.removeChild(iframe);flash("PNG error");return;}
-      window.html2canvas(pg,{scale:2,useCORS:true,backgroundColor:"#dde2ee"}).then(canvas=>{
+      const scale=built.width>1500?1:2;
+      window.html2canvas(pg,{scale,useCORS:true,backgroundColor:"#dde2ee"}).then(canvas=>{
         const link=document.createElement("a");
-        link.download=`Schedule-${project.name}-${mainActivity.name}-${active.label}-${date}.png`;
+        link.download=`Schedule-${project.name}-${active.label}-${date}.png`;
         link.href=canvas.toDataURL("image/png"); link.click();
         document.body.removeChild(iframe); flash("📷 PNG downloaded!");
       }).catch(err=>{document.body.removeChild(iframe);flash("PNG error: "+err.message);});
-    },600);
+    },700);
+  }
+
+  // Export the schedule (dates × activities, per location) to an .xlsx workbook.
+  function downloadScheduleExcel(active, towers, dateCols) {
+    if (!window.XLSX){flash("Excel library not ready");return;}
+    if (!active||!towers.length||!dateCols.length){flash("Nothing to export");return;}
+    const sas=config.subActivities;
+    const currSeg=config.segments.find(s=>s.id===seg);
+    const dateHdr=dateCols.map(dt=>{const c=schedColLabel(dt);return `${c.day} ${c.mon}`;});
+    const aoa=[];
+    aoa.push([`Schedule: ${active.label}`]);
+    aoa.push([`Range: ${active.from} → ${active.to}`, `Dates: ${dateCols[0]} → ${dateCols[dateCols.length-1]} (${dateCols.length}d)`, active.targetDate?`Target: ${active.targetDate}`:""]);
+    aoa.push(["Legend:", "✓ = Completed", "P = Planned", "P! = Overdue"]);
+    aoa.push([]);
+    towers.forEach(loc=>{
+      const unit=currSeg?.units.find(u=>u.loc===loc);
+      const st=towerStatus(seg,loc);
+      const doneC=Object.values(st).filter(v=>v==="done").length;
+      const tPct=sas.length?Math.round(doneC/sas.length*100):0;
+      aoa.push([`${loc}  [${unit?.type||"–"}]   ${doneC}/${sas.length}   ${tPct}%`]);
+      aoa.push(["ACTIVITY", ...dateHdr]);
+      sas.forEach((sa,ai)=>{
+        const status=st[sa.key]||"pending";
+        const todayDone=(daily?.[seg]?.[sa.key]?.done||[]).includes(loc);
+        const doneDate=histDone?.[seg]?.[sa.key]?.[loc]||(todayDone?todayStr():null);
+        const raw=active.plan?.[loc]?.[sa.key];
+        const sp=raw?(typeof raw==="string"?{s:raw,e:raw}:raw):null;
+        const row=[`${ai+1}. ${sa.name}`];
+        dateCols.forEach((dt,di)=>{
+          const isFirst=di===0;
+          const completed=status==="done"&&(doneDate?doneDate===dt:isFirst);
+          const inPlan=sp&&sp.s&&(sp.e?(dt>=sp.s&&dt<=sp.e):dt===sp.s);
+          const overdue=inPlan&&status!=="done"&&dt<todayStr();
+          row.push(completed?"✓":inPlan?(overdue?"P!":"P"):"");
+        });
+        aoa.push(row);
+      });
+      aoa.push([]);
+    });
+    const ws=window.XLSX.utils.aoa_to_sheet(aoa);
+    ws["!cols"]=[{wch:26},...dateCols.map(()=>({wch:6}))];
+    const wb=window.XLSX.utils.book_new();
+    window.XLSX.utils.book_append_sheet(wb, ws, "Schedule");
+    window.XLSX.writeFile(wb, `Schedule-${project.name}-${active.label}-${date}.xlsx`);
+    flash("📥 Excel downloaded!");
   }
 
   if (!config||!schedules) return (
@@ -1493,8 +1574,13 @@ th{padding:10px 12px;color:#fff;font-size:11px;font-weight:700;text-align:left;w
               <div>
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:10}}>
                   <div style={{fontSize:16,fontWeight:800,color:C.text}}>{active.label}</div>
-                  <div style={{display:"flex",gap:6}}>
-                    <button onClick={()=>downloadSchedulePNG(active,towers)}
+                  <div style={{display:"flex",gap:6,flexWrap:"wrap",justifyContent:"flex-end"}}>
+                    <button onClick={()=>downloadScheduleExcel(active,towers,dateCols)}
+                      style={{background:"#15663b",color:"#fff",border:"none",borderRadius:7,
+                        padding:"6px 12px",cursor:"pointer",fontSize:11,fontWeight:700}}>
+                      ⬇ Excel
+                    </button>
+                    <button onClick={()=>downloadSchedulePNG(active,towers,dateCols)}
                       style={{background:"#1a7a35",color:"#fff",border:"none",borderRadius:7,
                         padding:"6px 12px",cursor:"pointer",fontSize:11,fontWeight:700}}>
                       📷 PNG
