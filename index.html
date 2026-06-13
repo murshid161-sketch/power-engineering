@@ -11,7 +11,7 @@
        BUILD must equal the "v" value in version.json. Bump BOTH on every deploy. -->
   <script>
   (function(){
-    var BUILD="2026-06-13.8";
+    var BUILD="2026-06-13.9";
     try{
       fetch("version.json?ts="+Date.now(),{cache:"no-store"})
         .then(function(r){return r.ok?r.json():null;})
@@ -3481,7 +3481,11 @@ function DPRScreen({project,mainActivity,onBack,fbStatus,setFbStatus}) {
   function buildDprText() {
     const MON=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
     const fmtDate=ds=>{const[y,m,d]=ds.split("-").map(Number);return `${String(d).padStart(2,"0")}-${MON[m-1]}-${y}`;};
-    const fmtLocs=(locs,seg2)=>locs.map(loc=>{const tt=seg2.units.find(u=>u.loc===loc)?.type;return(tt&&tt!=="–")?`${loc} (${tt})`:loc;}).join(", ");
+    const subFor=(loc,seg2,saKey)=>{
+      if(chipMode==="plandate") return fmtChip(schedPlan[seg2.id]?.[saKey]?.[loc]);
+      const tt=seg2.units.find(u=>u.loc===loc)?.type; return (tt&&tt!=="–")?tt:"";
+    };
+    const fmtLocs=(locs,seg2,saKey)=>locs.map(loc=>{const s=subFor(loc,seg2,saKey);return s?`${loc} (${s})`:loc;}).join(", ");
     const collect=key=>config.segments.flatMap(seg2=>config.subActivities.map(sa=>{const locs=(daily[seg2.id]?.[sa.key]||{})[key]||[];return locs.length?{seg2,sa,locs}:null;}).filter(Boolean));
     const lines=[];
     lines.push(`*DPR - ${project.name}*`);
@@ -3497,7 +3501,7 @@ function DPRScreen({project,mainActivity,onBack,fbStatus,setFbStatus}) {
         const se=entries.filter(e=>e.seg2.id===seg2.id);
         if(!se.length) return;
         lines.push(`*${seg2.name}*`);
-        se.forEach(e=>lines.push(`• ${e.sa.name} – ${fmtLocs(e.locs,e.seg2)}`));
+        se.forEach(e=>lines.push(`• ${e.sa.name} – ${fmtLocs(e.locs,e.seg2,e.sa.key)}`));
       });
       lines.push("");
       lines.push("---");
@@ -3563,6 +3567,7 @@ function DPRScreen({project,mainActivity,onBack,fbStatus,setFbStatus}) {
           activity: sa.name,
           item: seg2.name,
           segId: sid,
+          saKey: sa.key,
           done:  d.done  || [],
           ip:    d.ip    || [],
           plan:  d.plan  || [],
@@ -3573,17 +3578,19 @@ function DPRScreen({project,mainActivity,onBack,fbStatus,setFbStatus}) {
 
     if (!rows.length) { flash("No entries today to export"); return; }
 
-    // Format towers with per-tower type shown underneath
-    const fmtTowers = (arr, color, icon, segId) => {
+    // Format towers with a per-tower sub-label underneath — type OR planned date per toggle
+    const fmtTowers = (arr, color, icon, segId, saKey) => {
       if (!arr.length) return "";
       const chips = arr.map(loc => {
-        const tt = typeMap[segId]?.[loc];
-        const typeTag = tt
-          ? `<div style="font-size:9px;font-weight:600;color:${color};opacity:0.7;margin-top:1px;letter-spacing:0.3px;">${tt}</div>`
+        const sub = chipMode==="plandate"
+          ? fmtChip(schedPlan[segId]?.[saKey]?.[loc])
+          : (typeMap[segId]?.[loc] || "");
+        const subTag = sub
+          ? `<div style="font-size:9px;font-weight:600;color:${color};opacity:0.7;margin-top:1px;letter-spacing:0.3px;">${sub}</div>`
           : "";
         return `<span style="display:inline-flex;flex-direction:column;align-items:center;margin:2px 4px;">
           <span style="color:${color};font-weight:700;font-family:'Courier New',monospace;font-size:12px;">${icon} ${loc}</span>
-          ${typeTag}
+          ${subTag}
         </span>`;
       }).join("");
       return `<span style="display:inline-flex;flex-wrap:wrap;align-items:flex-start;">${chips}</span>`;
@@ -3594,9 +3601,9 @@ function DPRScreen({project,mainActivity,onBack,fbStatus,setFbStatus}) {
       const bgDone  = i % 2 === 0 ? "#f0faf4" : "#e8f5ec";
       const bgIp    = i % 2 === 0 ? "#fffbf0" : "#fff8e8";
       const bgPlan  = i % 2 === 0 ? "#f0f4fa" : "#e8eef8";
-      const doneHtml = fmtTowers(r.done, "#1a7a35", "✓", r.segId);
-      const ipHtml   = fmtTowers(r.ip,   "#b06000", "▶", r.segId);
-      const planHtml = fmtTowers(r.plan, "#1a3a5c", "📅", r.segId);
+      const doneHtml = fmtTowers(r.done, "#1a7a35", "✓", r.segId, r.saKey);
+      const ipHtml   = fmtTowers(r.ip,   "#b06000", "▶", r.segId, r.saKey);
+      const planHtml = fmtTowers(r.plan, "#1a3a5c", "📅", r.segId, r.saKey);
       const border   = "border-bottom:1px solid #dde2ee;";
       const cell     = `padding:12px 10px;${border}vertical-align:top;`;
       return `
