@@ -21,6 +21,18 @@ This repo can be published with GitHub Pages (Settings → Pages → deploy from
 branch `main`, root). The app will then be available at
 `https://murshid161-sketch.github.io/power-engineering/`.
 
+## Auto-update / cache busting
+
+The page carries a `BUILD` string (in the inline `<script>` at the top of
+`index.html`) and there is a matching `version.json` with the same `v` value.
+On load the page fetches `version.json` (no-store) and, if the published `v`
+differs from its own `BUILD`, it silently reloads the fresh copy with a
+cache-busting `?v=` query — so users always end up on the latest version.
+
+**On every deploy, bump BOTH to the same new value:**
+- `index.html` → `var BUILD="...";`
+- `version.json` → `{ "v": "..." }`
+
 ## Tech
 
 - React 18 + ReactDOM (UMD) and Babel Standalone, loaded from CDN
