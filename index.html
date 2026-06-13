@@ -11,7 +11,7 @@
        BUILD must equal the "v" value in version.json. Bump BOTH on every deploy. -->
   <script>
   (function(){
-    var BUILD="2026-06-13.13";
+    var BUILD="2026-06-13.14";
     try{
       fetch("version.json?ts="+Date.now(),{cache:"no-store"})
         .then(function(r){return r.ok?r.json():null;})
@@ -3676,8 +3676,26 @@ function DPRScreen({project,mainActivity,onBack,fbStatus,setFbStatus}) {
   function addChips(sid,sak,startAs,mode="dpr",directLoc=null) {
     const raw=directLoc||(inputs[`${sid}_${sak}`]||"").trim();
     if (!raw) return;
-    const tokens=raw.split(/[,\s;]+/).map(s=>s.trim()).filter(Boolean);
-    const vs=new Set(getUnits(sid));
+    const units=getUnits(sid);
+    const idx=new Map(units.map((l,i)=>[l,i]));
+    // Expand a part: "7/2-7/10" → every tower from 7/2..7/10 (segment order); else split on spaces.
+    const expand=part=>{
+      part=(part||"").trim();
+      if(!part) return [];
+      const halves=part.split("-");
+      if(halves.length===2){
+        const a=halves[0].trim(), b=halves[1].trim();
+        if(idx.has(a)&&idx.has(b)){
+          let lo=idx.get(a), hi=idx.get(b);
+          if(lo>hi){const t=lo;lo=hi;hi=t;}
+          return units.slice(lo,hi+1);
+        }
+        return [part]; // unrecognised range → keep so it reports as invalid
+      }
+      return part.split(/\s+/).filter(Boolean);
+    };
+    const tokens=raw.split(/[,;]+/).flatMap(expand);
+    const vs=new Set(units);
     const valid=tokens.filter(t=>vs.has(t));
     const invalid=tokens.filter(t=>!vs.has(t));
     if (invalid.length) {
@@ -4179,7 +4197,7 @@ function DPRScreen({project,mainActivity,onBack,fbStatus,setFbStatus}) {
                 <input ref={el=>refs.current[ik]=el}
                   value={inputs[ik]||""} onChange={e=>setInputs(q=>({...q,[ik]:e.target.value}))}
                   onKeyDown={e=>e.key==="Enter"&&addChips(seg,sa.key,IP)}
-                  placeholder="Type tower no. e.g. 7/5"
+                  placeholder="e.g. 7/5  or range 7/2-7/10"
                   style={{flex:1,background:"#181818",border:`1px solid ${errors[ik]?"#f85149":C.border}`,
                     color:"#eee",fontFamily:MONO,fontSize:12,padding:"7px 10px",borderRadius:6,outline:"none"}}/>
                 <button onClick={()=>addChips(seg,sa.key,IP)}
@@ -4198,8 +4216,20 @@ function DPRScreen({project,mainActivity,onBack,fbStatus,setFbStatus}) {
               {(()=>{
                 const raw=(inputs[ik]||"").trim();
                 if (!raw||errors[ik]) return null;
-                const tokens=raw.split(/[,\s;]+/).map(s=>s.trim()).filter(Boolean);
-                const vs=new Set(getUnits(seg));
+                const units=getUnits(seg);
+                const idx=new Map(units.map((l,i)=>[l,i]));
+                const expand=part=>{
+                  part=(part||"").trim(); if(!part) return [];
+                  const halves=part.split("-");
+                  if(halves.length===2){
+                    const a=halves[0].trim(),b=halves[1].trim();
+                    if(idx.has(a)&&idx.has(b)){ let lo=idx.get(a),hi=idx.get(b); if(lo>hi){const t=lo;lo=hi;hi=t;} return units.slice(lo,hi+1); }
+                    return [part];
+                  }
+                  return part.split(/\s+/).filter(Boolean);
+                };
+                const tokens=raw.split(/[,;]+/).flatMap(expand);
+                const vs=new Set(units);
                 const hints=tokens.map(t=>{
                   if (!vs.has(t)) return null;
                   const cD=(cum[seg]?.[sa.key]?.done||[]).includes(t);
@@ -4285,7 +4315,7 @@ function DPRScreen({project,mainActivity,onBack,fbStatus,setFbStatus}) {
                 <input ref={el=>refs.current[ik]=el}
                   value={inputs[ik]||""} onChange={e=>setInputs(q=>({...q,[ik]:e.target.value}))}
                   onKeyDown={e=>{if(e.key==="Enter")addChips(seg,sa.key,PLAN,"plan");}}
-                  placeholder="Tower nos e.g. 7/5, 7/6"
+                  placeholder="e.g. 7/5, 7/6  or range 7/2-7/10"
                   style={{flex:1,background:"#181818",border:`1px solid ${C.border}`,color:"#eee",fontFamily:MONO,fontSize:12,padding:"7px 10px",borderRadius:6,outline:"none"}}/>
                 <button onClick={()=>addChips(seg,sa.key,PLAN,"plan")}
                   style={{background:"#eaf2ff",color:"#1a5ab0",border:"1px solid #6090d0",borderRadius:6,padding:"7px 13px",cursor:"pointer",fontWeight:700,fontSize:12}}>
