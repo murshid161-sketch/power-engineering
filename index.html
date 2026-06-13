@@ -11,7 +11,7 @@
        BUILD must equal the "v" value in version.json. Bump BOTH on every deploy. -->
   <script>
   (function(){
-    var BUILD="2026-06-13.10";
+    var BUILD="2026-06-13.11";
     try{
       fetch("version.json?ts="+Date.now(),{cache:"no-store"})
         .then(function(r){return r.ok?r.json():null;})
@@ -2391,6 +2391,7 @@ function PlanningTab({config,cum,daily,cfgKey,project,mainActivity}){
   const [cpModal,  setCpModal] =useState(false);
   const [cpText,   setCpText]  =useState("");
   const [msg,      setMsg]     =useState("");
+  const [planView, setPlanView]=useState(()=>lsGet("planView")||"matrix"); // "matrix" | "range"
 
   const flash=m=>{setMsg(m);setTimeout(()=>setMsg(""),2000);};
   const now=new Date();
@@ -2491,6 +2492,28 @@ function PlanningTab({config,cum,daily,cfgKey,project,mainActivity}){
     }
     if(isIp(sId,loc,saKey)) return{text:"▶",bg:"#fff8ec",fg:"#b06000",bdr:"#e09030",bold:false,dim:false};
     return{text:"",bg:"transparent",fg:"transparent",bdr:"transparent",bold:false,dim:false};
+  }
+
+  // ── Range view: collapse consecutive towers with the same plan into ranges ──
+  function buildRanges(){
+    const cs=config.segments.find(s=>s.id===seg);
+    const units=cs?.units||[];
+    const out=[];
+    config.subActivities.forEach(sa=>{
+      let run=null;
+      const flush=()=>{ if(run){ out.push({saName:sa.name,from:run.from,to:run.to,count:run.count,text:run.text}); run=null; } };
+      units.forEach(u=>{
+        const plan=getPlan(seg,u.loc,sa.key);
+        if(plan&&matchesView(plan)){
+          const key=`${plan.type}:${plan.value}`;
+          const text=plan.type==="day"?fmtD(plan.value):plan.value;
+          if(run&&run.key===key){ run.to=u.loc; run.count++; }
+          else { flush(); run={from:u.loc,to:u.loc,count:1,key,text}; }
+        } else flush();
+      });
+      flush();
+    });
+    return out;
   }
 
   // ── Cell tap: quick assign when week selected ────────────────────────────
@@ -2983,6 +3006,21 @@ function PlanningTab({config,cum,daily,cfgKey,project,mainActivity}){
       )}
 
 
+      {/* View mode toggle */}
+      <div style={{display:"flex",alignItems:"center",gap:8,padding:"8px 14px",
+        background:"#fff",borderBottom:`1px solid ${C.border}`,flexWrap:"wrap"}}>
+        <span style={{fontSize:11,color:C.muted,fontWeight:600}}>View:</span>
+        {[["matrix","Matrix (per tower)"],["range","Range table"]].map(([v,lbl])=>(
+          <button key={v} onClick={()=>{setPlanView(v);lsSet("planView",v);}}
+            style={{padding:"5px 11px",borderRadius:20,
+              border:`1.5px solid ${planView===v?C.amber:C.border}`,
+              background:planView===v?"#fff8ec":C.card,color:planView===v?C.amber:C.muted,
+              cursor:"pointer",fontSize:11,fontWeight:planView===v?700:500,whiteSpace:"nowrap"}}>
+            {lbl}
+          </button>
+        ))}
+      </div>
+
       {/* Legend */}
       <div style={{padding:"5px 14px",background:"#f8f9fc",borderBottom:`1px solid ${C.border}`,
         display:"flex",gap:10,flexWrap:"wrap",alignItems:"center",fontSize:10,color:C.muted}}>
@@ -3002,7 +3040,8 @@ function PlanningTab({config,cum,daily,cfgKey,project,mainActivity}){
         </span>
       </div>
 
-      {/* GRID */}
+      {/* GRID (matrix / per-tower) */}
+      {planView==="matrix"&&(
       <div style={{overflowX:"auto",WebkitOverflowScrolling:"touch"}}>
         <table style={{borderCollapse:"collapse",fontSize:11,
           minWidth:Math.max(220,180+filteredUnits.length*60)}}>
@@ -3065,8 +3104,9 @@ function PlanningTab({config,cum,daily,cfgKey,project,mainActivity}){
           </tbody>
         </table>
       </div>
+      )}
 
-      {filteredUnits.length===0&&(
+      {planView==="matrix"&&filteredUnits.length===0&&(
         <div style={{textAlign:"center",padding:"40px 20px",color:C.muted}}>
           <div style={{fontSize:28,marginBottom:8}}>{filterAct==="planned"?"📅":"🔍"}</div>
           <div style={{fontSize:13,fontWeight:700}}>
@@ -3074,6 +3114,46 @@ function PlanningTab({config,cum,daily,cfgKey,project,mainActivity}){
           </div>
         </div>
       )}
+
+      {/* RANGE TABLE — contiguous tower ranges per activity (no per-tower columns) */}
+      {planView==="range"&&(()=>{
+        const ranges=buildRanges();
+        if(!ranges.length) return (
+          <div style={{textAlign:"center",padding:"40px 20px",color:C.muted}}>
+            <div style={{fontSize:28,marginBottom:8}}>📅</div>
+            <div style={{fontSize:13,fontWeight:700}}>No planned ranges in {viewLbl}</div>
+          </div>
+        );
+        return (
+          <div style={{overflowX:"auto",WebkitOverflowScrolling:"touch"}}>
+            <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+              <thead style={{position:"sticky",top:0,zIndex:5}}>
+                <tr style={{background:C.navy}}>
+                  <th style={{padding:"9px 12px",color:"#fff",fontWeight:700,fontSize:11,textAlign:"left",minWidth:150}}>ACTIVITY</th>
+                  <th style={{padding:"9px 12px",color:"#fff",fontWeight:700,fontSize:11,textAlign:"center",whiteSpace:"nowrap"}}>FROM → TO</th>
+                  <th style={{padding:"9px 8px",color:"rgba(255,255,255,0.8)",fontWeight:700,fontSize:11,textAlign:"center"}}>TOWERS</th>
+                  <th style={{padding:"9px 12px",color:"#fff",fontWeight:700,fontSize:11,textAlign:"center"}}>PLANNED</th>
+                </tr>
+              </thead>
+              <tbody>
+                {ranges.map((r,i)=>(
+                  <tr key={i} style={{background:i%2===0?"#ffffff":"#f8f9fc"}}>
+                    <td style={{padding:"8px 12px",fontWeight:600,color:C.text,borderBottom:`1px solid ${C.border}`,whiteSpace:"nowrap"}}>{r.saName}</td>
+                    <td style={{padding:"8px 12px",fontFamily:MONO,fontWeight:700,color:C.navy,textAlign:"center",borderBottom:`1px solid ${C.border}`,whiteSpace:"nowrap"}}>
+                      {r.from}{r.from!==r.to?` → ${r.to}`:""}
+                    </td>
+                    <td style={{padding:"8px 8px",textAlign:"center",color:C.muted,borderBottom:`1px solid ${C.border}`}}>{r.count}</td>
+                    <td style={{padding:"8px 12px",textAlign:"center",borderBottom:`1px solid ${C.border}`}}>
+                      <span style={{background:"#fff9c4",border:"1.5px solid #f9a825",borderRadius:6,
+                        padding:"3px 9px",color:"#e65100",fontWeight:700,fontSize:11,whiteSpace:"nowrap"}}>{r.text}</span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        );
+      })()}
 
       {msg&&(
         <div style={{margin:"10px 14px",padding:"9px 14px",borderRadius:8,
